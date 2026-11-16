@@ -1,0 +1,148 @@
+# Registry of every known image source. `enabled: true` sources are ingested by `ml.data.build`.
+# License text records what each source states; "unverified" marks licences whose page has not been checked.
+#
+# Full scale (make full, FULL_LIMIT=2500 per source)
+#   ~5.3k real  = 2500 COCO + 2500 Open Images + 300 RAISE (test only).
+#   ~5.1k AI    = 2500 SDXL-Turbo (local, COCO captions) + ~760 DALL-E 3 + ~770 Midjourney
+#                 + ~790 Stable Diffusion + ~330 FLUX (held out, test only): 5 generators.
+#   Rapidata has about 280 prompts x 4 images per generator; 30% of prompts go to the held-out
+#   generator and the rest to training generators (HOLDOUT_PROMPT_PCT in download.py).
+#   Rapidata shard lists come from a 2026-11-16 listing of which of the 26 shards hold each generator.
+#   Only sources that download without a login are enabled.
+holdout_generator: flux   # never in train/val/gate; goes to report_test with the RAISE reals
+
+sources:
+  # ---------- real side ----------
+  - name: coco
+    side: real
+    generator: real_coco
+    downloader: coco
+    url: http://images.cocodataset.org/val2017/ + http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+    license: "annotations CC BY 4.0 (per cocodataset.org); images are Flickr photos under mixed CC licenses (not individually checked)"
+    notes: val2017 only (5000 images; a seeded sample is taken). Captions drive content-matched local generation.
+    enabled: true
+  - name: openimages
+    side: real
+    generator: real_openimages
+    downloader: openimages
+    url: https://storage.googleapis.com/openimages/2018_04/validation/validation-images-with-rotation.csv (image ids) + https://open-images-dataset.s3.amazonaws.com/validation/<id>.jpg
+    license: "images CC BY 2.0 (verified: all 41620 rows of the validation CSV list that licence; the per-image URL goes into the manifest); annotations CC BY 4.0 unverified"
+    notes: no login needed. Validation split only at smoke scale.
+    enabled: true
+  - name: raise
+    side: real
+    generator: real_raise
+    downloader: raise
+    url: http://loki.disi.unitn.it/RAISE/ (csv from getFile.php?p=1k, NEF files from the csv)
+    license: "RAISE licence PDF (opened): free for scientific NON-COMMERCIAL use, cite the paper, keep the licence + link with copies. Data stays out of git."
+    notes: raw camera NEF (Nikon), converted to JPEG with macOS `sips` (no rawpy dependency). ~10 MB per file, capped at 300 (about 3 GB of NEF downloads). Real-side test only.
+    max_limit: 300
+    enabled: true
+
+  # ---------- AI side: used now ----------
+  - name: rapidata_flux
+    side: ai
+    generator: flux
+    downloader: rapidata
+    model_name: flux
+    shards: [data/train_0001-00000-of-00001.parquet, data/train_0002-00000-of-00001.parquet, data/train_0003-00000-of-00001.parquet, data/train_0004-00000-of-00001.parquet, data/train_0005-00000-of-00001.parquet, data/train_0013-00000-of-00001.parquet, data/train_0014-00000-of-00001.parquet, data/train_0015-00000-of-00001.parquet, data/train_0016-00000-of-00001.parquet, data/train_0017-00000-of-00001.parquet, data/train_0022-00000-of-00001.parquet, data/train_0023-00000-of-00001.parquet, data/train_0024-00000-of-00001.parquet, data/train_0025-00000-of-00001.parquet, data/train_0026-00000-of-00001.parquet]
+    url: https://huggingface.co/datasets/Rapidata/Flux_SD3_MJ_Dalle_Human_Alignment_Dataset
+    license: "cdla-permissive-2.0 (HF tag from the API; dataset card text not read)"
+    notes: 2024-era FLUX outputs, COCO-style prompts. This is the held-out generator.
+    enabled: true
+  - name: rapidata_dalle3
+    side: ai
+    generator: dalle3
+    downloader: rapidata
+    model_name: dalle-3
+    shards: [data/train_0001-00000-of-00001.parquet, data/train_0002-00000-of-00001.parquet, data/train_0003-00000-of-00001.parquet, data/train_0004-00000-of-00001.parquet, data/train_0005-00000-of-00001.parquet, data/train_0006-00000-of-00001.parquet, data/train_0007-00000-of-00001.parquet, data/train_0008-00000-of-00001.parquet, data/train_0009-00000-of-00001.parquet, data/train_0010-00000-of-00001.parquet, data/train_0011-00000-of-00001.parquet, data/train_0012-00000-of-00001.parquet, data/train_0013-00000-of-00001.parquet]
+    url: https://huggingface.co/datasets/Rapidata/Flux_SD3_MJ_Dalle_Human_Alignment_Dataset
+    license: "cdla-permissive-2.0 (HF tag from the API; dataset card text not read)"
+    notes: same dataset as above.
+    enabled: true
+  - name: rapidata_midjourney
+    side: ai
+    generator: midjourney
+    downloader: rapidata
+    model_name: mj
+    shards: [data/train_0005-00000-of-00001.parquet, data/train_0006-00000-of-00001.parquet, data/train_0007-00000-of-00001.parquet, data/train_0008-00000-of-00001.parquet, data/train_0009-00000-of-00001.parquet, data/train_0013-00000-of-00001.parquet, data/train_0014-00000-of-00001.parquet, data/train_0015-00000-of-00001.parquet, data/train_0016-00000-of-00001.parquet, data/train_0017-00000-of-00001.parquet, data/train_0018-00000-of-00001.parquet, data/train_0019-00000-of-00001.parquet, data/train_0020-00000-of-00001.parquet, data/train_0021-00000-of-00001.parquet, data/train_0022-00000-of-00001.parquet]
+    url: https://huggingface.co/datasets/Rapidata/Flux_SD3_MJ_Dalle_Human_Alignment_Dataset
+    license: "cdla-permissive-2.0 (HF tag from the API; dataset card text not read)"
+    notes: same dataset as above.
+    enabled: true
+  - name: rapidata_sd
+    side: ai
+    generator: stable_diffusion
+    downloader: rapidata
+    model_name: stable_diffusion
+    shards: [data/train_0009-00000-of-00001.parquet, data/train_0010-00000-of-00001.parquet, data/train_0011-00000-of-00001.parquet, data/train_0012-00000-of-00001.parquet, data/train_0013-00000-of-00001.parquet, data/train_0017-00000-of-00001.parquet, data/train_0018-00000-of-00001.parquet, data/train_0019-00000-of-00001.parquet, data/train_0020-00000-of-00001.parquet, data/train_0021-00000-of-00001.parquet, data/train_0022-00000-of-00001.parquet, data/train_0023-00000-of-00001.parquet, data/train_0024-00000-of-00001.parquet, data/train_0025-00000-of-00001.parquet, data/train_0026-00000-of-00001.parquet]
+    url: https://huggingface.co/datasets/Rapidata/Flux_SD3_MJ_Dalle_Human_Alignment_Dataset
+    license: "cdla-permissive-2.0 (HF tag from the API; dataset card text not read)"
+    notes: same dataset; the dataset names it stable_diffusion; the SD version is not stated per image (the dataset title says SD3).
+    enabled: true
+  - name: sdxl_turbo
+    side: ai
+    generator: sdxl_turbo
+    downloader: generate_local   # run `python -m ml.data.generate_local`, not run by build
+    url: https://huggingface.co/stabilityai/sdxl-turbo
+    license: "Stability AI Community License (LICENSE.md on the model page, last updated July 5, 2024): free for research and non-commercial use; commercial use is free only after registering with Stability AI and while annual revenue stays under US $1M"
+    notes: free local generation on MPS, prompted with COCO captions of the real images (content-matched).
+    enabled: true
+
+  # ---------- AI side: surveyed, not enabled ----------
+  - name: flux_schnell_local
+    side: ai
+    generator: flux_schnell
+    downloader: generate_local
+    url: https://huggingface.co/black-forest-labs/FLUX.1-schnell
+    license: "apache-2.0 (per the model card; not re-checked)"
+    notes: supported by generate_local (--model flux_schnell) but untested (weights ~24 GB, not downloaded).
+    enabled: false
+  - name: genimage
+    side: ai
+    generator: genimage_old_gens
+    downloader: none
+    url: https://huggingface.co/datasets/ENSTA-U2IS/GenImage
+    license: "HF tag apache-2.0 on this mirror; upstream GenImage terms unverified"
+    notes: ~620 GB of split zips, ImageNet-class content, generators are 2022-2023 (ADM, BigGAN, GLIDE, Midjourney v5, SD1.4/1.5, VQDM, Wukong). Too big for smoke; a smaller mirror TheKernel01/Tiny-GenImage is tagged cc-by-nc-sa-4.0.
+    enabled: false
+  - name: synthbuster
+    side: ai
+    generator: synthbuster_mixed
+    downloader: none
+    url: https://zenodo.org/records/10066460
+    license: "CC BY-NC-SA 4.0 (zenodo API metadata)"
+    notes: single 12.4 GB zip (DALL-E 2/3, Midjourney v5, Firefly, SD1.3/1.4/2/XL, Glide). Open access, no login. Not downloaded; needs a ranged-zip reader to sample cheaply.
+    enabled: false
+  - name: synthbuster_plus_hf
+    side: ai
+    generator: synthbuster_mixed
+    downloader: none
+    url: https://huggingface.co/datasets/marco-willi/synthbuster-plus
+    license: unverified (no license tag)
+    notes: ~19 GB parquet mirror/extension of Synthbuster. Candidate for later.
+    enabled: false
+  - name: midjourney_v6_photoroom
+    side: ai
+    generator: midjourney_v6
+    downloader: none
+    url: https://huggingface.co/datasets/Photoroom/midjourney-v6-recap
+    license: "HF tag mit (card not read)"
+    notes: ~180 GB of 1.5 GB parquet shards. Newer MJ generation; good candidate for a full-scale run.
+    enabled: false
+  - name: dalle3_opendatasets
+    side: ai
+    generator: dalle3_big
+    downloader: none
+    url: https://huggingface.co/datasets/OpenDatasets/dalle-3-dataset
+    license: "HF tag cc0-1.0 (card not read)"
+    notes: ~31 GB, 67 parquet shards.
+    enabled: false
+  - name: flux_reason_6m
+    side: ai
+    generator: flux_dev
+    downloader: none
+    url: https://huggingface.co/datasets/LucasFang/FLUX-Reason-6M
+    license: "HF tag apache-2.0 (card not read)"
+    notes: ~840 GB, 6M FLUX images with captions; newest-generator candidate (2025), shards ~590 MB each.
+    enabled: false
