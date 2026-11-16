@@ -1,0 +1,15 @@
+/data/
+models/*
+!models/.gitkeep
+.venv/
+.env
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.next/
+*.parquet
+!tests/fixtures/**/*.parquet
+*.egg-info/
+/logs/
