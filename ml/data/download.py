@@ -8,10 +8,14 @@ import json
 import random
 import shutil
 import subprocess
+import time
 import zipfile
+from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import requests
+from PIL import Image, ImageOps
 
 from ml.data.sources import append_index, enabled_sources, holdout_generator, read_index, source_dir
 from ml.data.splits import REAL_TEST_GENERATOR, _bucket
@@ -19,6 +23,15 @@ from ml.data.splits import REAL_TEST_GENERATOR, _bucket
 COCO_ANN = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 OI_CSV = "https://storage.googleapis.com/openimages/2018_04/validation/validation-images-with-rotation.csv"
 OI_IMG = "https://open-images-dataset.s3.amazonaws.com/validation/{}.jpg"
+OI_ORIG_LICENSE = "https://creativecommons.org/licenses/by/2.0/"  # CC BY 2.0 as written in the CSV License column
+OI_ORIG_LONG_EDGE = 1600
+OI_ORIG_QUALITY = 90
+OI_ORIG_WORKERS = 2  # Flickr answers HTTP 429 after a burst of about 37 requests from 4 workers, so stay small
+OI_ORIG_PAUSE_S = (3.0, 8.0)  # random wait before each request, so requests never arrive in bursts; tests set it to (0, 0)
+OI_ORIG_TIMEOUT_S = (10, 120)  # connect, read: originals are up to ~16 MB
+OI_ORIG_RETRIES = 5  # after a 429, a 5xx or a network error
+OI_ORIG_BACKOFF_S = 15.0  # wait before the first retry, doubled for each next one; tests set it to 0
+OI_ORIG_MAX_ERRORS = OI_ORIG_WORKERS  # one full round of in-flight images failing every retry means a rate-limit block, so stop and send fewer requests to a blocked server
 RAISE_CSV = "http://loki.disi.unitn.it/RAISE/getFile.php?p=1k"
 RAPIDATA = "Rapidata/Flux_SD3_MJ_Dalle_Human_Alignment_Dataset"
 HOLDOUT_PROMPT_PCT = 30  # share of prompts (by hash) whose images go to the held-out generator
@@ -82,12 +95,95 @@ def openimages(src: dict, limit: int) -> None:
     rows = sorted(csv.DictReader(path.open(encoding="utf-8")), key=lambda r: r["ImageID"])
     random.Random(0).shuffle(rows)
     done = _done(src)
-    for r in rows[:limit]:
+    taken = {Path(r["file"]).stem for r in read_index("openimages_original")}  # same seeded order: a kept original is never re-fetched as a web copy
+    for r in [r for r in rows if r["ImageID"] not in taken][:limit]:
         name = f"{r['ImageID']}.jpg"
         if name in done:
             continue
         fetch(OI_IMG.format(r["ImageID"]), root / name)
         append_index(src["name"], _row(src, name, f"oi:{r['ImageID']}", license_url=r["License"]))
+
+
+def _oiorig_fetch(url: str) -> tuple[str, bytes | None, str]:
+    """Download one Flickr original. Returns ("ok", JPEG bytes at 1600 px long edge, camera make) or
+    (reason, None, ""): "dead" (4xx other than 429, or not an image), "no_exif" (no camera make),
+    "error" (every retry failed)."""
+    for attempt in range(OI_ORIG_RETRIES + 1):
+        time.sleep(random.uniform(*OI_ORIG_PAUSE_S))
+        try:
+            resp = requests.get(url, timeout=OI_ORIG_TIMEOUT_S)
+            code = resp.status_code
+        except requests.RequestException:
+            code = None
+        if code == 200:
+            break
+        if code is not None and code != 429 and code < 500:
+            return "dead", None, ""
+        if attempt < OI_ORIG_RETRIES:
+            time.sleep(OI_ORIG_BACKOFF_S * 2 ** attempt)
+    else:
+        return "error", None, ""
+    try:
+        im = Image.open(io.BytesIO(resp.content))
+        make = str(im.getexif().get(271) or "").strip(" \x00")
+        if not make:  # no camera make: often a scan, a screenshot or an export
+            return "no_exif", None, ""
+        im = ImageOps.exif_transpose(im).convert("RGB")  # the saved copy has no EXIF, so apply the rotation now
+        im.thumbnail((OI_ORIG_LONG_EDGE, OI_ORIG_LONG_EDGE), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=OI_ORIG_QUALITY)
+        return "ok", buf.getvalue(), make
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return "dead", None, ""
+
+
+def oiorig(src: dict, limit: int) -> None:
+    """Open Images originals: the Flickr original of each CC BY 2.0 validation image that the openimages source has
+    not taken, kept only when its EXIF names a camera make, stored at 1600 px on the long edge as JPEG q90.
+    Workers only download and resize; this thread writes every file and index line, so writes need no lock.
+    Dead links and photos without a camera make go to _rejected.txt and are not fetched again."""
+    root = source_dir(src["name"])
+    root.mkdir(parents=True, exist_ok=True)
+    csv_path = fetch(OI_CSV, source_dir("openimages") / "_validation-images.csv")
+    rows = sorted(csv.DictReader(csv_path.open(encoding="utf-8")), key=lambda r: r["ImageID"])
+    random.Random(0).shuffle(rows)  # seeded order so reruns and --limit/--grow are stable
+    rejected = root / "_rejected.txt"
+    skip = {Path(r["file"]).stem for name in ("openimages", src["name"]) for r in read_index(name)}
+    if rejected.exists():
+        skip |= set(rejected.read_text().split())
+    todo = iter([r for r in rows if r["License"] == OI_ORIG_LICENSE and r["ImageID"] not in skip])
+    n, counts, errors_in_row, running = len(read_index(src["name"])), Counter(), 0, {}
+    with ThreadPoolExecutor(OI_ORIG_WORKERS) as ex, rejected.open("a") as rej:
+        while n < limit:
+            while len(running) < OI_ORIG_WORKERS and (r := next(todo, None)) is not None:
+                running[ex.submit(_oiorig_fetch, r["OriginalURL"])] = r
+            if not running:
+                break
+            finished, _ = wait(running, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                r = running.pop(fut)
+                status, jpeg, make = fut.result()
+                counts[status] += 1
+                errors_in_row = errors_in_row + 1 if status == "error" else 0
+                if status in ("dead", "no_exif"):
+                    rej.write(r["ImageID"] + "\n")
+                    rej.flush()
+                elif status == "ok" and n < limit:  # results past the limit are dropped, so no overshoot
+                    name = f"{r['ImageID']}.jpg"
+                    (root / name).write_bytes(jpeg)
+                    append_index(src["name"], _row(src, name, f"oiorig:{r['ImageID']}", license_url=r["License"],
+                                                   author=r["Author"], author_url=r["AuthorProfileURL"],
+                                                   landing_url=r["OriginalLandingURL"], camera_make=make))
+                    n += 1
+                    if n % 100 == 0:
+                        print(f"[{src['name']}] kept {n}; this run so far: {dict(counts)}", flush=True)
+            if errors_in_row >= OI_ORIG_MAX_ERRORS:
+                print(f"[{src['name']}] stopped: {errors_in_row} images in a row failed every retry "
+                      "(likely rate limited); rerun later, the download resumes", flush=True)
+                break
+        for fut in running:  # limit reached: drop work that has not started
+            fut.cancel()
+    print(f"[{src['name']}] kept {n}; this run: {dict(counts)}", flush=True)
 
 
 def raise_(src: dict, limit: int) -> None:
@@ -109,7 +205,7 @@ def raise_(src: dict, limit: int) -> None:
         nef = fetch(r["NEF"], root / "_nef" / f"{r['File']}.NEF")
         subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "100", str(nef),
                         "--out", str(root / name)], check=True, capture_output=True)
-        nef.unlink()  # 10 MB each; the JPEG is what we keep
+        nef.unlink()  # 10 MB each; only the JPEG is kept
         append_index(src["name"], _row(src, name, f"raise:{r['File']}", device=r.get("Device")))
 
 
@@ -151,7 +247,7 @@ def rapidata(src: dict, limit: int) -> None:
                 n += 1
 
 
-DOWNLOADERS = {"coco": coco, "openimages": openimages, "raise": raise_, "rapidata": rapidata}
+DOWNLOADERS = {"coco": coco, "openimages": openimages, "oiorig": oiorig, "raise": raise_, "rapidata": rapidata}
 
 
 def main() -> None:
