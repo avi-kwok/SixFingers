@@ -31,7 +31,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SIXFINGERS_MODELS_DIR", str(tmp_path / "models"))
     (tmp_path / "models").mkdir()
     monkeypatch.setattr("ml.features.backbones.load_backbone", lambda name, device=None: FakeBackbone(name))
-    monkeypatch.setattr("ml.eval.run.RESULTS", tmp_path / "results.md")
+    for mod in ("ml.eval.run", "ml.judge_eval.run"):
+        monkeypatch.setattr(f"{mod}.RESULTS", tmp_path / "results.md")
     return tmp_path
 
 
@@ -78,3 +79,39 @@ def test_mlp_artifact_matches_sklearn(env):
     assert m["shipped"] in ("logistic", "mlp")
     # exported weights reproduce the sklearn decision: shipped logits order == probability order
     assert np.isfinite(probe_logit(art, X)).all()
+
+
+def test_judge_cap_and_cache(env, monkeypatch):
+    from ml.eval.run import ensemble_on  # noqa: F401
+    from ml.features import extract
+    from ml.judge_eval import run as j
+    from ml.probes.train import train
+    extract.run(["clip_vitl14"], limit=200)
+    train(["clip_vitl14"], promote=True)
+    calls = []
+
+    def create(**kw):
+        calls.append(kw["model"])
+        assert "temperature" not in kw and "thinking" not in kw
+        txt = '{"verdict":"likely_ai","confidence":0.9,"cues":[],"explanation":"x","overrode_detector":false}'
+        return types.SimpleNamespace(stop_reason="end_turn", content=[types.SimpleNamespace(text=txt)],
+                                     usage=types.SimpleNamespace(input_tokens=1000, output_tokens=100))
+    client = types.SimpleNamespace(messages=types.SimpleNamespace(create=create))
+    with pytest.raises(SystemExit):
+        j.main([], client=client)  # --approve-spend is required
+    j.main(["--approve-spend", "10", "--n", "6"], client=client)
+    n1 = len(calls)
+    assert n1 == 30
+    j.main(["--approve-spend", "10", "--n", "6"], client=client)
+    assert len(calls) == n1  # fully cached
+    assert "Judge comparison" in (env / "results.md").read_text()
+    # tiny cap stops before the first call and never overspends
+    (env / "data" / "eval" / "judge_cache.jsonl").unlink()
+    calls.clear()
+    j.main(["--approve-spend", "0.0001", "--n", "6"], client=client)
+    assert calls == []
+    assert "STOPPED" in (env / "results.md").read_text()
+
+
+def test_hard_cap_is_ten(env):
+    assert min(50.0, __import__("ml.judge_eval.run", fromlist=["x"]).HARD_CAP_USD) == 10.0
