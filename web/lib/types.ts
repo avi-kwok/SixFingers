@@ -22,6 +22,7 @@ export interface Timings { validate: number; provenance: number; detector: numbe
 export interface CheckResponse {
   verdict: Verdict;
   source: "judge" | "detector_only";
+  probability_ai: number;
   judge: JudgeResult | null;
   judge_unavailable_reason: "budget" | "timeout" | "error" | "refusal" | "disabled" | null;
   detector: DetectorResult;

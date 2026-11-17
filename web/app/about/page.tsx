@@ -26,7 +26,10 @@ export default async function About() {
       <h2>2. A statistical detector</h2>
       <p>Several large vision models turn the image into numbers. A small classifier on each learned, from real and AI examples, what generated images tend to look like. Their opinions are averaged into one score, then placed in a band (likely AI, uncertain, likely real).</p>
       <h2>3. A language model explains</h2>
-      <p>Claude looks at the image together with the detector scores and writes a short explanation with visual cues. It may disagree with the detector; if so, we say so. If it is unavailable we show the detector alone.</p>
+      <p>Claude looks at the image on its own, without the detector scores, and writes a short explanation with visual cues. It may disagree with the detector; if so, we say so. If it is unavailable we show the detector alone.</p>
+      <h2>The two percentages</h2>
+      <p><strong>X% likely AI</strong> is Claude&apos;s confidence that the image is AI-generated, adjusted on 300 validation images and checked on separate test images, so that, for example, answers of about 80% are right about 80% of the time. If Claude is unavailable, this number is the detector score instead.</p>
+      <p><strong>Detector score</strong> is the statistical detector&apos;s own probability, calibrated the same way. When the two disagree we say so, and the first number is the one to read.</p>
       <h2>Limits</h2>
       <ul>
         <li>Only fully AI-generated still images. Edited, inpainted or upscaled images are out of scope.</li>

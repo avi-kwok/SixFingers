@@ -130,6 +130,8 @@ function ResultCard({ r }: { r: CheckResponse }) {
         <span className={`badge ${r.verdict}`}>{LABEL[r.verdict]}</span>{" "}
         {r.source === "detector_only" && <span className="tag">Detector only</span>}
       </p>
+      <p style={{ fontSize: "2rem", fontWeight: 700, margin: "4px 0" }}>{pct(r.probability_ai)} likely AI</p>
+      <p className="muted"><small>Detector score: {pct(r.detector.score)}</small></p>
 
       {r.judge ? (
         <>
@@ -138,7 +140,7 @@ function ResultCard({ r }: { r: CheckResponse }) {
             <ul>{r.judge.cues.map((c, i) => <li key={i}><strong>{c.region}:</strong> {c.cue}</li>)}</ul>
           )}
           {r.judge.overrode_detector && (
-            <p><strong>Note:</strong> the explainer disagreed with the statistical detector (which said &quot;{LABEL[r.detector.band]}&quot;) and overrode it.</p>
+            <p><strong>Note:</strong> {disagreement(r)}</p>
           )}
         </>
       ) : (
@@ -146,7 +148,7 @@ function ResultCard({ r }: { r: CheckResponse }) {
       )}
 
       <h2>Detector</h2>
-      <p>Score {(r.detector.score * 100).toFixed(0)}% AI-like. Band: {LABEL[r.detector.band]}.</p>
+      <p>Score {pct(r.detector.score)} AI-like. Band: {LABEL[r.detector.band]}.</p>
 
       <h2>Provenance</h2>
       <p>
@@ -164,6 +166,15 @@ function ResultCard({ r }: { r: CheckResponse }) {
       <p className="muted"><small>{r.disclaimer}</small></p>
     </section>
   );
+}
+
+const pct = (p: number) => `${Math.round(p * 100)}%`;
+
+function disagreement(r: CheckResponse) {
+  const lean = { likely_ai: "AI", likely_real: "real", uncertain: "unsure" } as const;
+  const found = r.verdict === "likely_ai" ? "AI-generated" : "real";
+  const lead = r.detector.band === "uncertain" ? "The detector was unsure" : `The detector leaned ${lean[r.detector.band]}`;
+  return `${lead}, but Claude's visual check found it ${found}.`;
 }
 
 function unavailable(reason: CheckResponse["judge_unavailable_reason"]) {

@@ -7,6 +7,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
+
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -26,6 +28,18 @@ log = logging.getLogger("sixfingers")
 PROD_ORIGIN = "https://sixfingers.avikwok.dev"
 DISCLAIMER = ("This is an estimate, not proof. It only covers fully AI-generated still images; edited, "
               "inpainted or upscaled images are out of scope. Do not use it as the sole basis for decisions.")
+
+
+_CAL = json.loads((Path(__file__).parent / "judge_calibration.json").read_text())["points"]
+
+
+def judge_probability(verdict: str, confidence: float) -> float:
+    """Calibrated P(AI) from the judge's verdict and confidence (map fitted by ml/judge_eval/calibrate.py)."""
+    if verdict not in ("likely_ai", "likely_real"):
+        return 0.5  # 'uncertain' means no lean either way; the map is fitted on decisive verdicts only
+    raw = confidence if verdict == "likely_ai" else 1 - confidence
+    xs, ys = zip(*_CAL)
+    return float(np.interp(raw, xs, ys))
 
 
 class _JsonFmt(logging.Formatter):
@@ -110,9 +124,11 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
             raise HTTPException(503, "Detector model is not available.") from None
         t3 = time.perf_counter()
         verdict, source, jres, reason = det.band, "detector_only", None, None
+        prob = det.score
         try:
             out = jfut.result()
             verdict, source = out.verdict, "judge"
+            prob = judge_probability(out.verdict, out.confidence)
             jres = JudgeResult(model=MODEL, confidence=out.confidence, cues=out.cues, explanation=out.explanation,
                                overrode_detector=out.verdict != "uncertain" and out.verdict != det.band)
             if jres.overrode_detector:
@@ -131,7 +147,7 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
                                  "dims": [checked.width, checked.height], "format": checked.format,
                                  "latency_ms": total, "model_version": version, "ip_hash": ip_hash, "reason": reason, **src})
         return CheckResponse(
-            verdict=verdict, source=source, judge=jres, judge_unavailable_reason=reason, detector=det,
+            verdict=verdict, source=source, probability_ai=prob, judge=jres, judge_unavailable_reason=reason, detector=det,
             provenance=prov, model_version=version, disclaimer=DISCLAIMER,
             timings_ms=Timings(validate=int((t1 - t0) * 1000), provenance=int((t2 - t1) * 1000),
                                detector=int((t3 - t2) * 1000), judge=int((t4 - t3) * 1000), total=total))

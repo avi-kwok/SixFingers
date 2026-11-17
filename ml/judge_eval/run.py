@@ -143,8 +143,8 @@ def arm_table(slice_df, cache: Cache, ctx, arms=ARMS) -> list[dict]:
             v = {i: band_for(s, ctx["meta"].thresholds) for i, (s, _) in ctx["info"].items()}
             cost = 0.0
         else:
-            v = {i: cache.rows[(arm, i)]["verdict"] for (a, i) in cache.rows if a == arm}
-            cost = sum(r["cost"] for (a, _), r in cache.rows.items() if a == arm)
+            v = {i: cache.rows[(arm, i)]["verdict"] for (a, i) in cache.rows if a == arm and i in y}  # this slice only
+            cost = sum(r["cost"] for (a, i), r in cache.rows.items() if a == arm and i in y)
         if not v:
             continue
         f = [i for i in v if y[i] == 1]; rl = [i for i in v if y[i] == 0]
@@ -175,13 +175,17 @@ def main(argv=None, client=None):
     ap.add_argument("--approve-spend", type=float, required=True, help="dollar cap you approve (max 10)")
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--model-dir", default=None)
+    ap.add_argument("--split", default="report_test", choices=["report_test", "val"],
+                    help="val feeds the confidence calibration (ml/judge_eval/calibrate.py) without touching report_test")
+    ap.add_argument("--arms", default=None, help="comma-separated arm names, e.g. haiku_blind (default: all)")
     a = ap.parse_args(argv)
     cap = min(a.approve_spend, HARD_CAP_USD)
     if cap <= 0:
         sys.exit("--approve-spend must be > 0")
     model_dir = (Path(a.model_dir) if a.model_dir else current_model_dir()).resolve()
     df = store.load_manifest()
-    sl = stratified(df[df.split == "report_test"], a.n)
+    arms = [x for x in ARMS if a.arms is None or x[0] in a.arms.split(",")]
+    sl = stratified(df[df.split == a.split], a.n)
     cache = Cache(data_dir() / "eval" / "judge_cache.jsonl")
     if client is not None:
         backend = ApiBackend(client)
@@ -193,9 +197,12 @@ def main(argv=None, client=None):
         backend = from_env(anthropic.Anthropic() if kind == "api" else None)
     if backend is None:
         sys.exit("judge backend not configured (set SIXFINGERS_JUDGE_CMD for the command backend)")
-    ctx = run_arms(backend, sl, cache, cap, model_dir)
-    rows = arm_table(sl, cache, ctx)
-    write_block(rows, cache.spent, cap, ctx["stopped"], len(sl), backend.name)
+    ctx = run_arms(backend, sl, cache, cap, model_dir, arms)
+    rows = arm_table(sl, cache, ctx, arms)
+    if a.split == "report_test":
+        write_block(rows, cache.spent, cap, ctx["stopped"], len(sl), backend.name)
+    else:  # docs/results.md reports report_test only
+        print(json.dumps(rows, default=float, indent=1))
     print(f"spent ${cache.spent:.4f} / cap ${cap:.2f}" + (f"; stopped: {ctx['stopped']}" if ctx["stopped"] else ""))
 
 

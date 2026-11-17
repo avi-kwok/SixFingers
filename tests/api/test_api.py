@@ -15,6 +15,7 @@ def test_detector_only_when_no_key(build):
     assert j["source"] == "detector_only" and j["judge"] is None
     assert j["judge_unavailable_reason"] == "disabled"
     assert j["verdict"] == j["detector"]["band"] == "likely_ai"
+    assert j["probability_ai"] == j["detector"]["score"]
     assert set(j["timings_ms"]) == {"validate", "provenance", "detector", "judge", "total"}
     assert j["model_version"] == "v1" and set(j["detector"]["backbones"]) == {"clip_vitl14", "dinov2_vitl14"}
 
@@ -24,6 +25,7 @@ def test_judge_success_and_request_shape(build):
     j = post(build(fake), img_bytes(255)).json()
     assert j["source"] == "judge" and j["verdict"] == "likely_real"
     assert j["judge"]["overrode_detector"] is True and j["judge_unavailable_reason"] is None
+    assert abs(j["probability_ai"] - 0.2818) < 1e-3  # likely_real at 0.7 -> raw 0.3 -> calibrated
     kw = fake.calls[0]
     assert kw["model"] == "claude-haiku-5-5" and kw["output_config"]["effort"] == "low"
     assert kw["output_config"]["format"]["type"] == "json_schema"
@@ -195,3 +197,10 @@ def test_command_backend_retry_later_falls_back(build, monkeypatch, tmp_path):
     monkeypatch.setenv("SIXFINGERS_JUDGE_CMD", cmd)
     j = post(build(), img_bytes(255)).json()
     assert j["source"] == "detector_only" and j["judge_unavailable_reason"] == "error"
+
+
+def test_judge_probability_mapping():
+    from api.main import judge_probability
+    assert judge_probability("likely_ai", 0.9) > judge_probability("uncertain", 0.9) > judge_probability("likely_real", 0.9)
+    assert 0 < judge_probability("likely_real", 1.0) < judge_probability("likely_ai", 1.0) < 1
+    assert judge_probability("uncertain", 0.9) == 0.5

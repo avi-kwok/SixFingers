@@ -59,6 +59,23 @@ Two cutoffs turn the score into a band, both set on the validation set only:
 
 The backend is chosen by the same switch the API uses: `SIXFINGERS_JUDGE_BACKEND=api` (default) or `command`, which runs the program in `SIXFINGERS_JUDGE_CMD`. Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG and kept under 5 MB before anything is sent. Exit code 75 from the command means "try later": the run waits its `retry_after_s` (default 1800 s) and resumes from its cache. The command backend's cost is not metered, so its rows show $0 spend.
 
+## 9. Calibration
+
+The detector score is already calibrated with temperature scaling. Claude's answer is calibrated separately. First, `python -m ml.judge_eval.run --split val --arms haiku_blind` asks Claude about 300 `val` images and caches the answers in `data/eval/judge_cache.jsonl`. Then `python -m ml.judge_eval.calibrate` converts each decisive answer to a raw P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it) and fits a monotone map to the true labels. It tries isotonic regression and Platt scaling, keeps the one with the lower cross-validated Brier score on `val` (Platt), and writes piecewise-linear knots to `api/judge_calibration.json` with the model, arm and n. Outputs are clipped to 2%-98%.
+
+An `uncertain` answer is not fitted. The API maps it to 0.5, because Claude did not lean either way.
+
+The map never sees `report_test`, so the `report_test` rows below are an honest out-of-sample check (297 decisive answers). ECE uses 10 equal-width bins.
+
+| | ECE | Brier |
+|---|---|---|
+| `val`, raw | 0.175 | 0.0573 |
+| `val`, Platt (5-fold CV) | 0.020 | 0.0247 |
+| `report_test`, raw | 0.186 | 0.0498 |
+| `report_test`, calibrated | 0.026 | 0.0127 |
+
+Refit it if the judge model or prompt changes.
+
 ## Known limits
 
 - Only fully AI-generated still images are in scope. Edited or upscaled images are not.

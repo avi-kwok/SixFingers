@@ -14,6 +14,7 @@ export class ApiError extends Error {
 export const MOCK_RESULT: CheckResponse = {
   verdict: "likely_ai",
   source: "judge",
+  probability_ai: 0.94,
   judge: {
     model: "claude-haiku-5-5",
     confidence: 0.82,

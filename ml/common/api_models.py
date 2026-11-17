@@ -66,6 +66,7 @@ class Timings(BaseModel):
 class CheckResponse(BaseModel):
     verdict: Verdict
     source: Literal["judge", "detector_only"]
+    probability_ai: float = Field(ge=0, le=1)  # calibrated P(AI): judge-based when source=judge, else the detector score
     judge: JudgeResult | None = None
     judge_unavailable_reason: Literal["budget", "timeout", "error", "refusal", "disabled"] | None = None
     detector: DetectorResult
