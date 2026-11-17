@@ -6,7 +6,7 @@ export const MAX_BYTES = 10 * 1024 * 1024;
 export const ACCEPT = ["image/jpeg", "image/png", "image/webp"];
 
 export class ApiError extends Error {
-  constructor(public kind: "rate" | "big" | "type" | "refused" | "network" | "other", message: string) {
+  constructor(public kind: "rate" | "big" | "type" | "refused" | "link" | "timeout" | "network" | "other", message: string) {
     super(message);
   }
 }
@@ -44,8 +44,11 @@ const STATUS: Record<number, [ApiError["kind"], string]> = {
   422: ["refused", "We can't analyse this image."],
 };
 
+const LINK_MSG = "That link can't be used.";
+const LINK_EXPIRED = "Couldn't fetch that image. The link may have expired or not be public.";
+
 // XHR rather than fetch so we can report upload progress.
-export function checkImage(file: File, onProgress: (frac: number) => void): Promise<CheckResponse> {
+export function checkImage(file: File | string, onProgress: (frac: number) => void): Promise<CheckResponse> {
   if (MOCK) {
     return new Promise((res) => {
       onProgress(1);
@@ -63,11 +66,19 @@ export function checkImage(file: File, onProgress: (frac: number) => void): Prom
       if (xhr.status === 200) {
         try { return resolve(JSON.parse(xhr.responseText) as CheckResponse); } catch { /* fall through */ }
       }
+      if (typeof file === "string" && xhr.status === 400) {
+        let d = "";
+        try { d = JSON.parse(xhr.responseText).detail; } catch { /* keep empty */ }
+        return reject(new ApiError("link", d === LINK_MSG || d === LINK_EXPIRED ? d : "Something went wrong. Try again."));
+      }
+      if (xhr.status === 504) return reject(new ApiError("timeout", "The link took too long to respond. Try again."));
+      if (xhr.status === 502) return reject(new ApiError("other", "Couldn't fetch that image. Try again or upload the file."));
       const [kind, msg] = STATUS[xhr.status] ?? ["other", "Something went wrong on the server. Try again."];
       reject(new ApiError(kind, msg));
     };
     const form = new FormData();
-    form.append("image", file);
+    if (typeof file === "string") form.append("url", file);
+    else form.append("image", file);
     xhr.send(form);
   });
 }

@@ -18,15 +18,21 @@ export default function Home() {
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [over, setOver] = useState(false);
+  const [link, setLink] = useState("");
   const input = useRef<HTMLInputElement>(null);
 
-  const run = useCallback(async (f: File) => {
+  const run = useCallback(async (f: File | string) => {
     setResult(null);
     setError(null);
-    if (!ACCEPT.includes(f.type)) return setError("Unsupported file type. Use JPEG, PNG or WebP.");
-    if (f.size > MAX_BYTES) return setError("That image is too large. The limit is 10 MB.");
-    setFile(f);
-    setPreview(URL.createObjectURL(f));
+    if (typeof f === "string") {
+      setFile(null);
+      setPreview(null);
+    } else {
+      if (!ACCEPT.includes(f.type)) return setError("Unsupported file type. Use JPEG, PNG or WebP.");
+      if (f.size > MAX_BYTES) return setError("That image is too large. The limit is 10 MB.");
+      setFile(f);
+      setPreview(URL.createObjectURL(f));
+    }
     setProgress(0);
     setBusy(true);
     try {
@@ -43,7 +49,9 @@ export default function Home() {
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
       const f = Array.from(e.clipboardData?.files ?? []).find((x) => x.type.startsWith("image/"));
-      if (f) { e.preventDefault(); run(f); }
+      if (f) { e.preventDefault(); run(f); return; }
+      const t = e.clipboardData?.getData("text")?.trim() ?? "";
+      if (/^https:\/\/\S+$/.test(t) && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); setLink(t); }
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
@@ -75,7 +83,22 @@ export default function Home() {
         <strong>Drop an image, choose a file, or paste with Ctrl/Cmd+V</strong>
         <br /><span className="muted">JPEG, PNG or WebP, up to 10 MB</span>
       </label>
-      <p className="muted"><small>By uploading you agree to the <Link href="/terms">Terms</Link>.</small></p>
+      <form
+        onSubmit={(e) => { e.preventDefault(); if (link.trim()) run(link.trim()); }}
+        style={{ display: "flex", gap: 8, margin: "12px 0" }}
+      >
+        <input
+          type="url"
+          aria-label="Image link"
+          placeholder="or paste an image link (https://…)"
+          value={link}
+          disabled={busy}
+          onChange={(e) => setLink(e.target.value)}
+          style={{ flex: 1, minWidth: 0 }}
+        />
+        <button type="submit" disabled={busy || !link.trim()}>Check</button>
+      </form>
+      <p className="muted"><small>By uploading or linking an image you agree to the <Link href="/terms">Terms</Link>.</small></p>
 
       {preview && (
         <div className="card">

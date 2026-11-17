@@ -7,11 +7,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.detector import DetectorStore, FeatureEmbedder
+from api.fetch import fetch_image
 from api.judge import MODEL, Budget, Judge, JudgeUnavailable
 from api.limits import RateLimiter
 from api.provenance import read_provenance
@@ -29,7 +32,7 @@ class _JsonFmt(logging.Formatter):
     def format(self, r):
         d = {"time": self.formatTime(r, "%Y-%m-%dT%H:%M:%S"), "level": r.levelname, "msg": r.getMessage()}
         d.update({k: v for k, v in r.__dict__.items() if k in ("event", "verdict", "source", "score", "dims",
-                                                            "format", "latency_ms", "model_version", "ip_hash", "reason")})
+                                                            "format", "latency_ms", "model_version", "ip_hash", "reason", "input", "host")})
         return json.dumps(d)
 
 
@@ -80,19 +83,23 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
         return req.client.host if req.client else "unknown"
 
     @app.post("/v1/check", response_model=CheckResponse, response_model_by_alias=True)
-    def check(request: Request, image: UploadFile = File(...)):
+    def check(request: Request, image: UploadFile | None = File(None),
+              url: str | None = Form(None)):
         t0 = time.perf_counter()
         ms = lambda a: int((a - t0) * 1000)  # noqa: E731
+        if (image is None) == (url is None):
+            raise HTTPException(400, "Send either an image file or an image link.")
         ip_hash = limiter.ip_hash(client_ip(request))
         wait = limiter.allow(ip_hash)
         if wait:
             raise HTTPException(429, "Too many checks. Try again later.", headers={"Retry-After": str(wait)})
-        data = image.file.read(MAX_BYTES + 1)  # never buffer more than the cap
         try:
+            data = fetch_image(url) if url is not None else image.file.read(MAX_BYTES + 1)  # never buffer more than the cap
             checked = validate_upload(data)
         except UploadError as e:
             raise HTTPException(e.status, e.detail) from None
         t1 = time.perf_counter()
+        src = {"input": "link", "host": urlsplit(url.strip()).hostname} if url is not None else {"input": "file"}
         prov = read_provenance(data, checked.mime, checked.image)
         t2 = time.perf_counter()
         jfut = pool.submit(judge.judge, data, checked.mime, prov)  # runs while the detector scores
@@ -118,11 +125,11 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
         if reason == "refusal":
             log.info("refusal", extra={"event": "refusal", "score": round(det.score, 4), "dims": [checked.width, checked.height],
                                        "format": checked.format, "latency_ms": total, "model_version": version,
-                                       "ip_hash": ip_hash, "reason": reason})
+                                       "ip_hash": ip_hash, "reason": reason, **src})
             raise HTTPException(422, "We can't analyse this image.")
         log.info("check", extra={"event": "check", "verdict": verdict, "source": source, "score": round(det.score, 4),
                                  "dims": [checked.width, checked.height], "format": checked.format,
-                                 "latency_ms": total, "model_version": version, "ip_hash": ip_hash, "reason": reason})
+                                 "latency_ms": total, "model_version": version, "ip_hash": ip_hash, "reason": reason, **src})
         return CheckResponse(
             verdict=verdict, source=source, judge=jres, judge_unavailable_reason=reason, detector=det,
             provenance=prov, model_version=version, disclaimer=DISCLAIMER,

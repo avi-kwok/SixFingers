@@ -128,7 +128,7 @@ def test_bad_uploads(build):
     assert post(c, b"GIF89a" + b"0" * 50, "a.png", "image/png").status_code == 415
     assert post(c, b"\xff\xd8\xff" + b"junk").status_code == 400
     assert post(c, b"x" * (10 * 1024 * 1024 + 1)).status_code == 413
-    assert c.post("/v1/check").status_code == 422
+    assert c.post("/v1/check").status_code == 400
 
 
 def test_pixel_cap(build, monkeypatch):

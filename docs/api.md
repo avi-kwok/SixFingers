@@ -4,6 +4,7 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 
 ## What happens to one picture (`POST /v1/check`)
 
+0. **Input**. Send exactly one of the multipart file `image` or the form field `url` (an https link). Both or neither gives `400`. For a link, `api/fetch.py` downloads it first, in memory, then the bytes follow the same path as an upload (see **Fetching links**).
 1. **Validate** (`api/validate.py`). We look at the first bytes of the file to see if it is really a JPEG, PNG or WebP (file names lie). More than 10 MB gives `413`. A wrong type gives `415`. A file with more than 40 million pixels is refused too, because tiny files can unpack into enormous images ("decompression bombs"). Nothing is written to disk.
 2. **Provenance** (`api/provenance.py`). Some tools sign AI images with a C2PA manifest, or leave hints in metadata (like `trainedAlgorithmicMedia`). We report what we find. Finding nothing proves nothing, since metadata is easily stripped.
 3. **Detector** (`api/detector.py`). Each backbone (a big pretrained vision model) turns the picture into a list of numbers (an embedding). A small "probe" per backbone turns that into a score from 0 to 1. We average the scores in logit space, giving one ensemble score. Two thresholds from `meta.json` turn it into a band: `likely_ai`, `uncertain` or `likely_real`.
@@ -15,18 +16,32 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 
 | Endpoint | What it does |
 |---|---|
-| `POST /v1/check` | Multipart form, field name `image`. Returns the JSON result. |
+| `POST /v1/check` | Multipart form with either `image` (a file) or `url` (an https link). Returns the JSON result. |
 | `GET /v1/model` | Current model version, thresholds, and eval metrics. |
 | `GET /v1/health` | `200 ok`, or `503` if no model is loadable. |
 
 **Refusals.** If the judge refuses the image, the API returns `422` with detail `We can't analyse this image.` and no verdict. One `refusal` line is logged with the same fields as a check line.
 
-Errors: `400` unreadable image, `413` too big, `415` wrong type, `422` missing field, or the judge refused the image, `429` too many checks (see `Retry-After`), `503` no model.
+Errors: `400` unreadable image, both or neither of `image` and `url`, or an unusable link, `413` too big, `415` wrong type, `422` the judge refused the image, `429` too many checks (see `Retry-After`), `502` the link could not be fetched, `503` no model, `504` the link timed out.
 
 Try it:
 
     make serve
     curl -F image=@photo.jpg http://127.0.0.1:8000/v1/check
+    curl -F url=https://example.com/photo.jpg http://127.0.0.1:8000/v1/check
+
+## Fetching links
+
+The server downloads the link, so it must not be a way to reach internal machines. Rules in `api/fetch.py`:
+
+- https only, no `user:pass@` in the URL.
+- The host name is resolved and every address must be globally routable. Loopback, private, link-local (such as `169.254.169.254`), multicast, reserved, unspecified, carrier-grade NAT (`100.64.0.0/10`) and IPv4-mapped IPv6 forms of those are refused.
+- The connection goes to the checked IP address, never to a second lookup, so DNS rebinding cannot swap the address. TLS server name, certificate check and the `Host` header still use the original host name.
+- Up to 3 redirects, each followed by hand and checked with the same rules.
+- 5 second connect timeout, 10 seconds in total. The body is streamed and stops at the 10 MB cap. No cookies; the `User-Agent` is `SixFingers/1.0`.
+- Nothing is written to disk.
+
+Errors: a blocked address, a non-https link or credentials give `400` "That link can't be used.". A `401`, `403`, `404` or `410` from the host gives `400` "Couldn't fetch that image. The link may have expired or not be public." (Discord links expire after about a day). A timeout gives `504`; any other fetch failure gives `502`. Link checks count toward the rate limit like uploads.
 
 ## Model loading and hot reload
 
@@ -50,7 +65,7 @@ Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG, a
 - **Rate limit**: 10 checks per IP per hour. We store only a hash of the IP mixed with a secret salt and today's date, so it changes daily. It lives in memory, so a restart resets it (fine for one worker).
 - **Judge budget**: about 500 Claude calls per day (`SIXFINGERS_JUDGE_BUDGET`). The counter is saved in `data/judge_budget.json`, so restarts do not reset it.
 - **CORS**: only `https://sixfingers.avikwok.dev` may call the API from a browser. Set `SIXFINGERS_DEV=1` to also allow `localhost:3000`.
-- **Logs**: one JSON line per check (time, verdict, source, score, dimensions, format, latency, model version, IP hash). Never image bytes or image hashes. Every time the judge disagrees with the detector, an `override` line is logged; every refusal logs a `refusal` line.
+- **Logs**: one JSON line per check (time, verdict, source, score, dimensions, format, latency, model version, IP hash, and `input`: `file` or `link`). For links only the host name is logged, never the full URL, which can carry a signed token. Never image bytes or image hashes. Every time the judge disagrees with the detector, an `override` line is logged; every refusal logs a `refusal` line.
 
 ## Settings (environment variables)
 
@@ -67,4 +82,4 @@ Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG, a
 
 ## Tests
 
-`make test` runs `tests/api/`. A fake Anthropic client covers success, timeout, error, refusal (422) and budget cases, plus the image-only prompt, the computed override flag and detector/judge concurrency. A fake `models/vN` folder and a stub embedder cover the rest, including 413/415/429 and hot reload. No network, no real API calls.
+`make test` runs `tests/api/`. A fake Anthropic client covers success, timeout, error, refusal (422) and budget cases, plus the image-only prompt, the computed override flag and detector/judge concurrency. A fake `models/vN` folder and a stub embedder cover the rest, including 413/415/429 and hot reload. `tests/api/test_fetch.py` covers links with mocked DNS and HTTP: blocked addresses, redirects, size cap, timeouts and the vetted-IP connection. No network, no real API calls.
