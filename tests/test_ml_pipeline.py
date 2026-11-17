@@ -70,6 +70,26 @@ def test_train_eval_end_to_end(env):
     assert "report_test" in load_meta(d / "meta.json").metrics
 
 
+def test_train_never_moves_current_only_gate_promotes(env):
+    from ml.features import extract
+    from ml.loop import run
+    from ml.probes.train import train
+    from ml.common.schemas import BACKBONES
+    extract.run(list(BACKBONES), limit=200)  # the default train stage trains every backbone
+    v1 = train(["clip_vitl14"], promote=True)
+    cur = env / "models" / "current"
+    assert cur.resolve().name == v1
+    train(["clip_vitl14"])  # plain train: current must stay on v1
+    assert cur.resolve().name == v1
+    run.default_stages(0)["train"]()  # real loop CLI stage, subprocess; no promote
+    assert cur.resolve().name == v1
+    assert len(run.versions()) == 3
+    r = run.run_loop({"fetch": lambda: None, "extract": lambda: None, "train": lambda: train(["clip_vitl14"])},
+                     evaluate=lambda d: {"tpr_at_5fpr": 0.9, "real_fpr": 0.0, "per_generator_tpr": {}},
+                     rows=lambda: 0, out_dir=env / "rep", post=lambda m: None)
+    assert r["outcome"] == "promoted" and r["candidate"] == "v4" and cur.resolve().name == "v4"
+
+
 def test_mlp_artifact_matches_sklearn(env):
     from sklearn.neural_network import MLPClassifier
     from ml.probes.train import fit_backbone
