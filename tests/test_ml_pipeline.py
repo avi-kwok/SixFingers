@@ -31,6 +31,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SIXFINGERS_MODELS_DIR", str(tmp_path / "models"))
     (tmp_path / "models").mkdir()
     monkeypatch.setattr("ml.features.backbones.load_backbone", lambda name, device=None: FakeBackbone(name))
+    monkeypatch.setattr("ml.eval.run.RESULTS", tmp_path / "results.md")
     return tmp_path
 
 
@@ -39,6 +40,33 @@ def test_extract_is_resumable(env):
     first = extract.run(["clip_vitl14"], limit=200)
     assert first["clip_vitl14"] == 84  # 18 train x3 + 9 val + 9 gate + 6 report_test x2 (clean + compressed)
     assert extract.run(["clip_vitl14"], limit=200)["clip_vitl14"] == 0
+
+
+def test_train_eval_end_to_end(env):
+    from ml.eval.run import run as run_eval
+    from ml.features import extract, store
+    from ml.probes.train import train
+    bbs = ["clip_vitl14", "siglip"]
+    extract.run(bbs, limit=200)
+    v = train(bbs)
+    d = env / "models" / v
+    meta = load_meta(d / "meta.json")
+    assert not (env / "models" / "current").exists()
+    assert meta.thresholds.t_real <= meta.thresholds.t_ai
+    # thresholds hold on val: <=5% of reals reach t_ai, <=10% of fakes fall under t_real
+    df = store.load_manifest()
+    va = df[df.split == "val"]
+    from ml.eval.run import ensemble_on
+    kept, s, _ = ensemble_on(d, meta, va, 0)
+    y = kept.label.to_numpy()
+    assert (s[y == 0] >= meta.thresholds.t_ai).mean() <= 0.05 + 1e-9
+    assert (s[y == 1] <= meta.thresholds.t_real).mean() <= 0.10 + 1e-9
+    res = run_eval(d)
+    assert res["variants"]["clean"]["auroc"] > 0.9
+    assert res["variants"]["compressed"]["n"] == 6
+    assert "per_generator_tpr" in res["variants"]["clean"]
+    assert (env / "results.md").exists()
+    assert "report_test" in load_meta(d / "meta.json").metrics
 
 
 def test_mlp_artifact_matches_sklearn(env):

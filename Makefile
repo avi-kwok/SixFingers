@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup data features train test
+.PHONY: setup data features train eval test
 
 setup:
 	python3.11 -m venv .venv
@@ -15,6 +15,9 @@ features:
 # manual promote: training alone never moves models/current
 train:
 	$(PY) -m ml.probes.train --promote
+
+eval:
+	$(PY) -m ml.eval.run
 
 test:
 	$(PY) -m pytest tests -q
