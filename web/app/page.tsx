@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ACCEPT, ApiError, MAX_BYTES, MOCK, checkImage } from "@/lib/api";
+import { ACCEPT, ApiError, MAX_BYTES, MOCK, checkImage, getModel } from "@/lib/api";
 import type { CheckResponse, Verdict } from "@/lib/types";
 
 const LABEL: Record<Verdict, string> = {
@@ -20,6 +20,19 @@ export default function Home() {
   const [over, setOver] = useState(false);
   const [link, setLink] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  const [facts, setFacts] = useState<string | null>(null);
+
+  useEffect(() => {
+    getModel().then((m) => {
+      const { version, metrics } = m as { version?: string; metrics?: Record<string, unknown> };
+      const clean = (metrics?.report_test as { variants?: { clean?: { tpr_at_5fpr?: unknown; auroc?: unknown } } } | undefined)?.variants?.clean;
+      const t = clean?.tpr_at_5fpr;
+      const a = clean?.auroc;
+      const metric = typeof t === "number" ? `${Math.round(t * 100)}% of an unseen generator's images caught at 5% false alarms` : typeof a === "number" ? `AUROC ${a.toFixed(2)}` : null;
+      const parts = [version && `Model ${version}`, metric].filter(Boolean);
+      setFacts(parts.length ? parts.join(" · ") : null);
+    }).catch(() => setFacts(null));
+  }, []);
 
   const run = useCallback(async (f: File | string) => {
     setResult(null);
@@ -59,8 +72,18 @@ export default function Home() {
 
   return (
     <>
-      <h1>Does this image look AI-generated?</h1>
-      <p className="muted">Whole images made by a generator only. Edited, inpainted or upscaled photos are out of scope.</p>
+      <section className="hero" aria-label="Introduction">
+        <h1>Does this image look AI-generated?</h1>
+        <p className="muted">Whole images made by a generator only. Edited, inpainted or upscaled photos are out of scope.</p>
+        <ol className="steps" aria-label="How it works">
+          <li><b>Upload</b></li>
+          <li>Provenance check</li>
+          <li>3 detector probes (CLIP, DINOv2, SigLIP)</li>
+          <li>Claude Haiku visual check</li>
+          <li><b>Verdict</b></li>
+        </ol>
+        {facts && <p className="facts">{facts}</p>}
+      </section>
       {MOCK && <p role="status" className="tag">Mock mode: no server call</p>}
 
       <label
@@ -130,7 +153,7 @@ function ResultCard({ r }: { r: CheckResponse }) {
         <span className={`badge ${r.verdict}`}>{LABEL[r.verdict]}</span>{" "}
         {r.source === "detector_only" && <span className="tag">Detector only</span>}
       </p>
-      <p style={{ fontSize: "2rem", fontWeight: 700, margin: "4px 0" }}>{pct(r.probability_ai)} likely AI</p>
+      <p style={{ fontSize: "2rem", fontWeight: 700, margin: "4px 0", color: "var(--ink)" }}>{pct(r.probability_ai)} likely AI</p>
       <p className="muted"><small>Detector score: {pct(r.detector.score)}</small></p>
 
       {r.judge ? (

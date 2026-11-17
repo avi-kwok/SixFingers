@@ -85,7 +85,7 @@ export function checkImage(file: File | string, onProgress: (frac: number) => vo
 }
 
 export async function getModel(): Promise<unknown> {
-  if (MOCK) return { version: "v0-mock", metrics: { tpr_at_5fpr_clean: 0.9, auroc: 0.96 } };
+  if (MOCK) return { version: "v0-mock", metrics: { report_test: { variants: { clean: { tpr_at_5fpr: 0.9, auroc: 0.96 } } } } };
   const r = await fetch(`${API_URL}/v1/model`);
   if (!r.ok) throw new Error(String(r.status));
   return r.json();

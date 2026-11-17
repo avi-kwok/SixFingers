@@ -11,3 +11,7 @@ The upload goes direct to the API because Vercel limits request bodies to about 
 Keep `web/lib/types.ts` in step with `ml/common/api_models.py`.
 
 The About page explains the two percentages in plain words.
+
+## Style
+
+Plain CSS in `web/app/globals.css`, the system font stack (no web font), white background in every mode (no dark theme), colours and radii copied from avikwok.dev (green `#16a34a`, darker green-ink for text and buttons, 16px cards, 6px nested items, 4px chips). Verdict colours: AI red, real green, uncertain amber, each at least 4.5:1 on white. The "How it works" strip on the main page reads the model version and one metric from `GET /v1/model` and hides them if the call fails.
