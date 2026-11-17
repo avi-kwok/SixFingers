@@ -1,19 +1,8 @@
 import json
-import shlex
-import sys
+import time
 
+from tests.api.conftest import JUDGE_JSON, command_script
 from tests.test_ml_pipeline import env, FakeBackbone  # noqa: F401
-
-
-JUDGE_JSON = json.dumps({"verdict": "likely_real", "confidence": 0.7, "explanation": "Natural grain.",
-                         "cues": [{"region": "hands", "cue": "five fingers"}], "overrode_detector": True})
-
-
-def command_script(tmp_path, body, name="judge.py"):
-    """Write a Python program to tmp_path and return a shell-safe command line that runs it."""
-    script = tmp_path / name
-    script.write_text(body)
-    return " ".join(shlex.quote(p) for p in (sys.executable, str(script)))
 
 
 def _judge_script(tmp_path, fail_at: int, fail_stdout: str | None) -> str:
@@ -38,7 +27,15 @@ def _prepare(monkeypatch, tmp_path, cmd):
     sleeps = []
     monkeypatch.setenv("SIXFINGERS_JUDGE_BACKEND", "command")
     monkeypatch.setenv("SIXFINGERS_JUDGE_CMD", cmd)
-    monkeypatch.setattr("ml.judge_eval.run.time.sleep", sleeps.append)
+    real_sleep = time.sleep
+
+    def fake_sleep(s):  # time.sleep is global: subprocess polling also sleeps, so record only retry waits
+        if s >= 1:
+            sleeps.append(s)
+        else:
+            real_sleep(s)
+
+    monkeypatch.setattr("ml.judge_eval.run.time.sleep", fake_sleep)
     return sleeps
 
 

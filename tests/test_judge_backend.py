@@ -2,8 +2,6 @@ import base64
 import io
 import json
 import os
-import shlex
-import sys
 
 import pytest
 from PIL import Image
@@ -11,17 +9,7 @@ from PIL import Image
 import ml.common.judge_backend as jb
 from ml.common.api_models import JudgeOutput
 from ml.common.judge_backend import ApiBackend, BackendError, CommandBackend, from_env, prepare_image
-
-
-JUDGE_JSON = json.dumps({"verdict": "likely_real", "confidence": 0.7, "explanation": "Natural grain.",
-                         "cues": [{"region": "hands", "cue": "five fingers"}], "overrode_detector": True})
-
-
-def command_script(tmp_path, body, name="judge.py"):
-    """Write a Python program to tmp_path and return a shell-safe command line that runs it."""
-    script = tmp_path / name
-    script.write_text(body)
-    return " ".join(shlex.quote(p) for p in (sys.executable, str(script)))
+from tests.api.conftest import JUDGE_JSON, command_script
 
 
 def png(size, noise=False):
