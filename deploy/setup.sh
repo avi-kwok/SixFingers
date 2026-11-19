@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Idempotent setup for Ubuntu ARM (Oracle A1). Run as the "ubuntu" user from the repo: bash deploy/setup.sh
 # Safe to re-run: every step checks before changing anything. Never touches secrets.
+# The nightly loop is off by default; SIXFINGERS_ENABLE_LOOP=1 bash deploy/setup.sh turns it on.
 set -euo pipefail
 
 DOMAIN="${SIXFINGERS_DOMAIN:-api.sixfingers.avikwok.dev}"
@@ -36,8 +37,13 @@ PY
 
 say "directories + .env placeholder (permissions only; secrets are a manual step, see RUNBOOK)"
 mkdir -p data models
-[ -f .env ] || { umask 177; : > .env; }
+[ -f .env ] || ( umask 177; : > .env )  # subshell: a lasting umask would make /etc/caddy/Caddyfile unreadable
 chmod 600 .env
+# Caddy is the only way in (API bound to 127.0.0.1) and sets X-Forwarded-For, so the API may trust it for per-visitor limits.
+if ! grep -q '^SIXFINGERS_TRUST_PROXY=' .env; then
+  [ -s .env ] && [ -n "$(tail -c1 .env)" ] && echo >> .env  # last line has no newline
+  echo 'SIXFINGERS_TRUST_PROXY=1' >> .env
+fi
 
 say "systemd unit sixfingers-api"
 sudo tee /etc/systemd/system/sixfingers-api.service >/dev/null <<UNIT
@@ -79,12 +85,17 @@ for p in 80 443; do
 done
 sudo netfilter-persistent save
 
-say "nightly loop cron (02:00 Pacific; flock + timeout + nice; ends before 06:00)"
-sudo tee /etc/cron.d/sixfingers-loop >/dev/null <<CRON
-CRON_TZ=America/Los_Angeles
-0 2 * * * $RUN_USER flock -n /tmp/sixfingers-loop.lock timeout 230m nice -n 19 bash $REPO/deploy/run_loop.sh >> $REPO/data/loop.log 2>&1
+if [ "${SIXFINGERS_ENABLE_LOOP:-0}" = 1 ]; then
+  # cron.d ignores CRON_TZ on Ubuntu, so the time is UTC: 09:00 UTC = 01:00 PST / 02:00 PDT, done before 06:00 Pacific.
+  say "nightly loop cron (09:00 UTC; flock + timeout + nice)"
+  sudo tee /etc/cron.d/sixfingers-loop >/dev/null <<CRON
+0 9 * * * $RUN_USER flock -n /tmp/sixfingers-loop.lock timeout 230m nice -n 19 bash $REPO/deploy/run_loop.sh >> $REPO/data/loop.log 2>&1
 CRON
-sudo chmod 644 /etc/cron.d/sixfingers-loop
+  sudo chmod 644 /etc/cron.d/sixfingers-loop
+else
+  say "nightly loop off (set SIXFINGERS_ENABLE_LOOP=1 to turn it on)"
+  sudo rm -f /etc/cron.d/sixfingers-loop
+fi
 
 say "sixfingers doctor command"
 sudo tee /usr/local/bin/sixfingers >/dev/null <<CLI

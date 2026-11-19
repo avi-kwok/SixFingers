@@ -4,8 +4,10 @@ import os
 import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -51,8 +53,11 @@ def env_has_key(name):
 
 
 def get_json(url):
-    with urllib.request.urlopen(url, timeout=5) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:  # /v1/health answers 503 with a JSON body while loading or with no model
+        return json.load(e)
 
 
 def main():
@@ -70,8 +75,15 @@ def main():
     cur = MODELS / "current"
     check("models/current", "OK" if cur.exists() else "FAIL", os.readlink(cur) if cur.is_symlink() else "missing symlink")
     try:
-        h, m = get_json("http://127.0.0.1:8000/v1/health"), get_json("http://127.0.0.1:8000/v1/model")
-        check("api model loaded", "OK", f"health={h.get('status', h)} version={m.get('version', m.get('model_version', '?'))}")
+        health = get_json("http://127.0.0.1:8000/v1/health")
+        served, status = health.get("model_version"), health.get("status")
+        want = os.readlink(cur) if cur.is_symlink() else "?"
+        if status == "no_model":
+            check("api model loaded", "FAIL", f"no model (models/current -> {want})")
+        elif status == "loading":
+            check("api model loaded", "WARN", f"still loading backbones for {served}; re-run in a minute")
+        else:
+            check("api model loaded", "OK" if served == want else "WARN", f"serving {served} (models/current -> {want})")
     except Exception as e:  # noqa: BLE001
         check("api model loaded", "FAIL", type(e).__name__)
 
@@ -79,6 +91,8 @@ def main():
         check("SIXFINGERS_JUDGE_CMD", "OK" if env_has_key("SIXFINGERS_JUDGE_CMD") else "FAIL", "present" if env_has_key("SIXFINGERS_JUDGE_CMD") else "missing (judge backend is command)")
     else:
         check("ANTHROPIC_API_KEY", "OK" if env_has_key("ANTHROPIC_API_KEY") else "FAIL", "present" if env_has_key("ANTHROPIC_API_KEY") else "missing (judge falls back to detector only)")
+    proxy = env_value("SIXFINGERS_TRUST_PROXY") == "1"
+    check("SIXFINGERS_TRUST_PROXY", "OK" if proxy else "FAIL", "1" if proxy else "not 1 (uvicorn already trusts X-Forwarded-For from 127.0.0.1; 1 makes the API's own client-IP logic explicit)")
     check("DISCORD_WEBHOOK_URL", "OK" if env_has_key("DISCORD_WEBHOOK_URL") else "WARN", "present" if env_has_key("DISCORD_WEBHOOK_URL") else "missing (loop reports skip Discord)")
 
     try:
@@ -87,12 +101,21 @@ def main():
     except Exception:  # noqa: BLE001
         check("judge budget", "WARN", f"no counter file at {BUDGET_FILE}")
 
+    loop_on = Path("/etc/cron.d/sixfingers-loop").exists()
+    if not loop_on:
+        check("nightly loop", "OK", "off (opt-in, see RUNBOOK)")
     reports = sorted((DATA / "loop_reports").glob("*.json")) if (DATA / "loop_reports").is_dir() else []
     if reports:
         last = json.loads(reports[-1].read_text())
         check("last nightly loop", "OK" if last.get("outcome") != "error" else "WARN", f"{last['date']} {last['outcome']}")
-    else:
+    elif loop_on:
         check("last nightly loop", "WARN", "no report yet")
+
+    try:
+        tz = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"], capture_output=True, text=True, timeout=5).stdout.strip()
+        check("timezone", "OK" if tz in ("UTC", "Etc/UTC") else "WARN", tz if tz in ("UTC", "Etc/UTC") else f"{tz or 'unknown'} (the loop cron time 0 9 * * * assumes UTC)")
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # no timedatectl (not systemd): skip
 
     du = shutil.disk_usage(REPO)
     free = du.free / 2**30
