@@ -1,4 +1,4 @@
-"""FastAPI app: POST /v1/check, GET /v1/model, GET /v1/health."""
+"""FastAPI app: POST /v1/check, GET /v1/model, GET /v1/scorecard, GET /v1/health."""
 import json
 import logging
 import os
@@ -194,6 +194,13 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
             raise HTTPException(503, "Detector model is not available.") from None
         return {"version": m.version, "backbones": m.meta.backbones, "thresholds": m.meta.thresholds.model_dump(),
                 "metrics": m.meta.metrics, "created_at": m.meta.created_at}
+
+    @app.get("/v1/scorecard")
+    def scorecard():
+        try:  # written offline by ml/eval/scorecard.py next to the model it describes
+            return json.loads((store.link / "scorecard.json").read_text())
+        except (FileNotFoundError, NotADirectoryError):
+            raise HTTPException(404, "No scorecard for the current model.") from None
 
     @app.get("/v1/health")
     def health():

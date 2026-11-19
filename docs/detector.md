@@ -53,6 +53,8 @@ Two cutoffs turn the score into a band, both set on the validation set only:
 - Per-generator TPR and real-image false-positive rate on RAISE.
 - CPU latency per image, and a comparison against one open detector (`umm-maybe/AI-image-detector`, `ml/eval/baseline.py`).
 
+The scorecard (`python -m ml.eval.scorecard`, served by `GET /v1/scorecard`) breaks these numbers down per generator and per real-photo source at `t_ai`, for clean and compressed images. See `docs/api.md`, section **Scorecard**.
+
 ## 8. The Claude judge comparison
 
 `ml/judge_eval/run.py` tests whether asking a Claude model to look at the image beats the probes alone, and whether showing it the probe scores helps. Haiku, Sonnet and Opus are tried with and without the evidence on 300 test images. It costs real money, so it refuses to run without `--approve-spend 10`, stops before passing $10, and caches every answer. Tests use a fake client and never call the API.
@@ -61,7 +63,7 @@ The backend is chosen by the same switch the API uses: `SIXFINGERS_JUDGE_BACKEND
 
 ## 9. Calibration
 
-The detector score is already calibrated with temperature scaling. Claude's answer is calibrated separately. First, `python -m ml.judge_eval.run --split val --arms haiku_blind` asks Claude about 300 `val` images and caches the answers in `data/eval/judge_cache_prod.jsonl`, the default cache for both `run` and `calibrate`. Older answers from an earlier prompt stay in `data/eval/judge_cache.jsonl` and are not refit. The run sends exactly what the live API sends: the production prompt (`SYSTEM` in `api/judge.py`) and the provenance text read from the image itself, with no detector scores. A different prompt can change how confident the judge is, so a map fitted on one prompt does not carry over to another. Then `python -m ml.judge_eval.calibrate` converts each decisive answer to a raw P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it) and fits a monotone map to the true labels. It tries isotonic regression and Platt scaling, keeps the one with the lower cross-validated Brier score on `val` (Platt), and writes piecewise-linear knots to `api/judge_calibration.json` with the model, arm and n. Outputs are clipped to 2%-98%.
+The detector score is already calibrated with temperature scaling. Claude's answer is calibrated separately. First, `python -m ml.judge_eval.run --split val --arms haiku_blind` asks Claude about 300 `val` images and caches the answers in `data/eval/judge_cache_prod.jsonl`, the default cache for both `run` and `calibrate`. That file always holds answers for the current production prompt. Answers from earlier prompts are kept for reference in `data/eval/judge_cache.jsonl` (the first eval prompt) and `data/eval/judge_cache_prod1.jsonl` (the production prompt before evidence boxes, which the current map was fitted on). The run sends exactly what the live API sends: the production prompt (`SYSTEM` in `api/judge.py`) and the provenance text read from the image itself, with no detector scores. A different prompt can change how confident the judge is, so a map fitted on one prompt may not carry over to another. After every prompt change we re-run the same images and refit only if the calibrated `report_test` ECE moves by more than 0.01 or accuracy drops by more than 1 point. Then `python -m ml.judge_eval.calibrate` converts each decisive answer to a raw P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it) and fits a monotone map to the true labels. It tries isotonic regression and Platt scaling, keeps the one with the lower cross-validated Brier score on `val` (Platt), and writes piecewise-linear knots to `api/judge_calibration.json` with the model, arm and n. Outputs are clipped to 2%-98%.
 
 An `uncertain` answer is not fitted. The API maps it to 0.5, because Claude did not lean either way.
 
@@ -74,7 +76,9 @@ The map never sees `report_test`, so the `report_test` rows below are an honest 
 | `report_test`, raw | 0.229 | 0.0638 |
 | `report_test`, calibrated | 0.028 | 0.0097 |
 
-Refit it if the judge model or prompt changes. Pass `--cache <new file>` to both commands so old answers from the previous prompt are not reused.
+The table above is from the production prompt before evidence boxes (`judge_cache_prod1.jsonl`). Re-checked with the evidence-box prompt (same 300 `val` and 300 `report_test` images, now in `judge_cache_prod.jsonl`): the map still fits, so it was kept. On `report_test` the calibrated ECE is 0.025 (Brier 0.0128, raw ECE 0.218) and accuracy is 96.3% (was 96.7%).
+
+When the judge model or prompt changes, move the old answers to a new file name, re-run both slices into `judge_cache_prod.jsonl`, and apply the rule above.
 
 ## Known limits
 

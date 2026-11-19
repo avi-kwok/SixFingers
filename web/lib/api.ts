@@ -1,4 +1,4 @@
-import type { CheckResponse } from "./types";
+import type { CheckResponse, Scorecard } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 export const MOCK = process.env.NEXT_PUBLIC_MOCK === "1";
@@ -19,8 +19,9 @@ export const MOCK_RESULT: CheckResponse = {
     model: "claude-haiku-5-5",
     confidence: 0.82,
     cues: [
-      { region: "hands", cue: "Fingers merge and one hand shows six digits." },
-      { region: "background text", cue: "Signage letters are warped and unreadable." },
+      { region: "hands", cue: "Fingers merge and one hand shows six digits.", box: [0.18, 0.55, 0.42, 0.85] },
+      { region: "background text", cue: "Signage letters are warped and unreadable.", box: [0.6, 0.08, 0.92, 0.3] },
+      { region: "lighting", cue: "Shadows fall in two directions across the scene.", box: null },
     ],
     explanation: "Detector and visual cues agree: anatomy and text artifacts typical of generated images.",
     overrode_detector: false,
@@ -36,6 +37,28 @@ export const MOCK_RESULT: CheckResponse = {
   model_version: "v0-mock",
   timings_ms: { validate: 3, provenance: 12, detector: 240, judge: 1800, total: 2100 },
   disclaimer: "Mock data. No real image was analysed.",
+};
+
+export const MOCK_SCORECARD: Scorecard = {
+  model_version: "v0-mock",
+  date: "2026-01-01",
+  t_ai: 0.5,
+  detector: {
+    clean: {
+      overall: { split: "report_test", n: 600, auroc: 0.98, tpr_at_5fpr: 0.92, ece: 0.02 },
+      generators: [{ generator: "flux", split: "report_test", n: 300, catch_rate: 0.96 }],
+      real_sources: [
+        { source: "raise", split: "report_test", n: 300, false_alarm_rate: 0.18 },
+        { source: "coco", split: "val", n: 350, false_alarm_rate: 0.04 },
+      ],
+    },
+    compressed: {
+      overall: { split: "report_test", n: 600, auroc: 0.97, tpr_at_5fpr: 0.9, ece: 0.03 },
+      generators: [{ generator: "flux", split: "report_test", n: 300, catch_rate: 0.95 }],
+      real_sources: [{ source: "raise", split: "report_test", n: 300, false_alarm_rate: 0.15 }],
+    },
+  },
+  judge: { model: "claude-haiku-5-5", split: "report_test", n: 300, accuracy: 0.97, uncertain_rate: 0.02, calibrated_ece: 0.03, calibration_method: "platt" },
 };
 
 const STATUS: Record<number, [ApiError["kind"], string]> = {
@@ -89,4 +112,15 @@ export async function getModel(): Promise<unknown> {
   const r = await fetch(`${API_URL}/v1/model`);
   if (!r.ok) throw new Error(String(r.status));
   return r.json();
+}
+
+// Resolves null when the server has no scorecard (404) or cannot be reached.
+export async function getScorecard(): Promise<Scorecard | null> {
+  if (MOCK) return MOCK_SCORECARD;
+  try {
+    const r = await fetch(`${API_URL}/v1/scorecard`, { cache: "no-store" });
+    return r.ok ? ((await r.json()) as Scorecard) : null;
+  } catch {
+    return null;
+  }
 }

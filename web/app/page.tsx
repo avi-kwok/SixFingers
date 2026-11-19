@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ACCEPT, ApiError, MAX_BYTES, MOCK, checkImage, getModel } from "@/lib/api";
 import type { CheckResponse, Verdict } from "@/lib/types";
 
@@ -82,7 +83,7 @@ export default function Home() {
           <li>Claude Haiku visual check</li>
           <li><b>Verdict</b></li>
         </ol>
-        {facts && <p className="facts">{facts}</p>}
+        <p className="facts">{facts && `${facts} · `}<Link href="/scorecard">Full scorecard</Link></p>
       </section>
       {MOCK && <p role="status" className="tag">Mock mode: no server call</p>}
 
@@ -123,7 +124,7 @@ export default function Home() {
       </form>
       <p className="muted"><small>By uploading or linking an image you agree to the <Link href="/terms">Terms</Link>.</small></p>
 
-      {preview && (
+      {preview && !result && (
         <div className="card">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className="preview" src={preview} alt={file ? `Preview of ${file.name}` : "Preview"} />
@@ -137,30 +138,83 @@ export default function Home() {
         </div>
       )}
 
-      <div aria-live="polite">
+      <div aria-live="polite" className="report">
         {error && <div className="card err" role="alert">{error}</div>}
-        {result && <ResultCard r={result} />}
+        {result && <ResultCard r={result} preview={preview} name={file?.name} />}
       </div>
     </>
   );
 }
 
-function ResultCard({ r }: { r: CheckResponse }) {
+function ResultCard({ r, preview, name }: { r: CheckResponse; preview: string | null; name?: string }) {
   const c2pa = r.provenance.c2pa;
+  const cues = r.judge?.cues ?? [];
+  const boxed = !!preview && cues.some((c) => c.box);
+  const [active, setActive] = useState<number | null>(null);
+  const [showBoxes, setShowBoxes] = useState(true);
+  const [stamp, setStamp] = useState<string | null>(null);
+  const hl = (i: number) => (boxed ? { onMouseEnter: () => setActive(i), onMouseLeave: () => setActive(null), onFocus: () => setActive(i), onBlur: () => setActive(null) } : {});
+
+  const download = () => {
+    flushSync(() => setStamp(new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC"));
+    window.print();  // the report is this card with print CSS; nothing leaves the browser
+  };
+
   return (
     <section className="card" aria-label="Result">
+      <p className="print-only"><strong>SixFingers report</strong>{stamp && ` · ${stamp}`}</p>
+      {c2pa.present && (
+        <p className="banner" role="note">
+          Signed by {c2pa.issuer ?? "an unknown issuer"}{c2pa.ai_generated ? ": marked AI-generated" : ""}
+        </p>
+      )}
       <p>
         <span className={`badge ${r.verdict}`}>{LABEL[r.verdict]}</span>{" "}
         {r.source === "detector_only" && <span className="tag">Detector only</span>}
       </p>
       <p style={{ fontSize: "2rem", fontWeight: 700, margin: "4px 0", color: "var(--ink)" }}>{pct(r.probability_ai)} likely AI</p>
+      <p className="muted no-print" style={{ margin: 0 }}><small><Link href="/scorecard#calibration">What this number means</Link></small></p>
       <p className="muted"><small>Detector score: {pct(r.detector.score)}</small></p>
+      {r.verdict === "uncertain" && (
+        <p className="note">
+          <strong>We would rather say we don&apos;t know than guess.</strong> The evidence points both ways, so we are not calling this image AI or real.
+          Our calibrated estimate is {pct(r.probability_ai)} likely AI: of images that get this number, about {pct(r.probability_ai)} turn out to be AI.
+        </p>
+      )}
+
+      {preview && (
+        <figure className={`evidence${showBoxes ? "" : " boxes-off"}`}>
+          <div className="frame">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img className="preview" src={preview} alt={`${name ? `Your image ${name}` : "Your image"}${boxed ? ", with numbered boxes matching the cues listed below" : ""}`} />
+            {cues.map((c, i) => c.box && (
+              <span
+                key={i}
+                aria-hidden="true"
+                className={`box${active === i ? " on" : ""}`}
+                style={{ left: `${c.box[0] * 100}%`, top: `${c.box[1] * 100}%`, width: `${(c.box[2] - c.box[0]) * 100}%`, height: `${(c.box[3] - c.box[1]) * 100}%` }}
+                onMouseEnter={() => setActive(i)}
+                onMouseLeave={() => setActive(null)}
+              ><b>{i + 1}</b></span>
+            ))}
+          </div>
+          {boxed && (
+            <figcaption className="no-print">
+              <label><input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} /> Show evidence boxes</label>
+            </figcaption>
+          )}
+        </figure>
+      )}
 
       {r.judge ? (
         <>
           <p>{r.judge.explanation}</p>
-          {r.judge.cues.length > 0 && (
-            <ul>{r.judge.cues.map((c, i) => <li key={i}><strong>{c.region}:</strong> {c.cue}</li>)}</ul>
+          {cues.length > 0 && (
+            <ol className="cues">{cues.map((c, i) => (
+              <li key={i} className={active === i ? "on" : undefined} tabIndex={boxed && c.box ? 0 : undefined} {...(c.box ? hl(i) : {})}>
+                <strong>{c.region}:</strong> {c.cue}{boxed && !c.box && <span className="muted"> (whole image)</span>}
+              </li>
+            ))}</ol>
           )}
           {r.judge.overrode_detector && (
             <p><strong>Note:</strong> {disagreement(r)}</p>
@@ -187,6 +241,10 @@ function ResultCard({ r }: { r: CheckResponse }) {
 
       <p className="muted"><small>Scope: fully AI-generated images only. Edited or upscaled images are not covered. Model {r.model_version}.</small></p>
       <p className="muted"><small>{r.disclaimer}</small></p>
+      <p className="no-print">
+        <button type="button" onClick={download}>Download report</button>{" "}
+        <small className="muted">Opens the print dialog; choose &quot;Save as PDF&quot;. Made in your browser, nothing is uploaded or stored.</small>
+      </p>
     </section>
   );
 }

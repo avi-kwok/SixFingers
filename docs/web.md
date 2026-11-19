@@ -12,6 +12,17 @@ Keep `web/lib/types.ts` in step with `ml/common/api_models.py`.
 
 The About page explains the two percentages in plain words.
 
+## Result card extras
+
+- **Provenance first.** When the image has a C2PA manifest, a banner ("Signed by <issuer>: marked AI-generated", or "Signed by <issuer>") sits above the verdict. Without one, provenance stays in its section lower down.
+- **Evidence boxes.** Each cue may carry `box` = `[x0, y0, x1, y1]` as 0-1 fractions of the upright image. The card draws them over the local preview as numbered rectangles (absolutely positioned `<span>`s in percent), numbered like the cue list. Hovering or focusing a cue highlights its box, and hovering a box highlights its cue. A checkbox hides the boxes. Link checks have no local preview, so they show the cue list only.
+- **Uncertain.** An `uncertain` verdict adds a note ("We would rather say we don't know than guess") with the calibrated probability. Under the big number, "What this number means" links to `/scorecard#calibration`.
+- **Download report.** The button stamps the UTC time and calls `window.print()`. Print CSS (`@media print` in `globals.css`) hides everything except the result card, so the report is the card itself: verdict, probability, boxes over the preview, cues, provenance, detector score, model version and disclaimer. Choose "Save as PDF" in the print dialog. Nothing is uploaded or stored.
+
+## Scorecard page
+
+`/scorecard` is rendered on the server from `GET /v1/scorecard` (see `docs/api.md`, **Scorecard**). It shows the catch rate per generator, the false-alarm rate per real-photo source (clean and compressed), clean vs compressed overall, the Claude Haiku visual check's accuracy and uncertain rate, the calibration sentence (`#calibration`) and limits. If the endpoint fails or returns 404 it says the scorecard is unavailable. It is linked from the header and from the facts line on the home page. Mock mode uses `MOCK_SCORECARD` in `web/lib/api.ts`; `MOCK_RESULT` has two boxed cues and one whole-image cue.
+
 ## Style
 
 Plain CSS in `web/app/globals.css`, the system font stack (no web font), white background in every mode (no dark theme), colours and radii copied from avikwok.dev (green `#16a34a`, darker green-ink for text and buttons, 16px cards, 6px nested items, 4px chips). Verdict colours: AI red, real green, uncertain amber, each at least 4.5:1 on white. The "How it works" strip on the main page reads the model version and one metric from `GET /v1/model` and hides them if the call fails.

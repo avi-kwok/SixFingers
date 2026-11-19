@@ -15,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="wrap">
             <Link href="/" className="mark">SixFingers<span>.</span></Link>
             <nav aria-label="Main">
+              <Link href="/scorecard">Scorecard</Link>
               <Link href="/about">About</Link>
               <Link href="/privacy">Privacy</Link>
               <Link href="/terms">Terms</Link>

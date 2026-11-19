@@ -69,14 +69,14 @@ Measured on v13. v15 uses the same three backbones, so this time is the same. No
 
 Run before v15 was trained. The `probes` arm and the `_evidence` arms used the scores of the model that was live then. Not rerun for v15.
 
-The `haiku_blind` row uses the production prompt (`SYSTEM` in `api/judge.py`) on the same 300 images; it was 0.977 accurate under the older eval prompt. The other judge arms still use the older eval prompt.
+The `haiku_blind` row uses the current production prompt (`SYSTEM` in `api/judge.py`, with evidence boxes) on the same 300 images. It was 0.967 accurate before evidence boxes were added, and 0.977 under the older eval prompt. The other judge arms still use the older eval prompt.
 
 Stratified slice of report_test (n=300), clean images. Verdict counted correct only when decisive and right (uncertain = wrong). Spend $0.0000 of $10.00 cap. Backend: command (cost is not metered for the command backend).
 
 | arm | n | TPR (ai called ai) | FPR (real called ai) | uncertain | accuracy | failures | cost $ |
 |---|---|---|---|---|---|---|---|
 | probes | 300 | 0.944 | 0.188 | 0.000 | 0.883 | 0 | 0.0000 |
-| haiku_blind | 300 | 0.944 | 0.000 | 0.020 | 0.967 | 0 | 0.0000 |
+| haiku_blind | 300 | 0.932 | 0.000 | 0.023 | 0.963 | 0 | 0.0000 |
 | haiku_evidence | 300 | 0.944 | 0.000 | 0.017 | 0.963 | 0 | 0.0000 |
 | sonnet_blind | 300 | 0.981 | 0.000 | 0.017 | 0.983 | 0 | 0.0000 |
 | sonnet_evidence | 300 | 0.951 | 0.000 | 0.033 | 0.963 | 0 | 0.0000 |

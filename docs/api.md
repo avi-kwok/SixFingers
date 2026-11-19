@@ -9,6 +9,7 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 2. **Provenance** (`api/provenance.py`). Some tools sign AI images with a C2PA manifest, or leave hints in metadata (like `trainedAlgorithmicMedia`). We report what we find. Finding nothing proves nothing, since metadata is easily stripped.
 3. **Detector** (`api/detector.py`). Each backbone (a big pretrained vision model) turns the picture into a list of numbers (an embedding). A small "probe" per backbone turns that into a score from 0 to 1. We average the scores in logit space, giving one ensemble score. Two thresholds from `meta.json` turn it into a band: `likely_ai`, `uncertain` or `likely_real`.
 4. **Judge** (`api/judge.py`). The judge starts at the same time as the detector, so total time is about the slower of the two. It sees the picture and the provenance findings, never the detector scores (in a 300-image comparison the image-only judge was more accurate). It returns a structured answer (verdict, confidence, cues, a short explanation). The backend is chosen by environment variable: by default Claude Haiku through the Anthropic API (low effort, 15 second timeout), or a local command (see below).
+   **Evidence boxes.** Each cue may carry a `box`: `[x0, y0, x1, y1]`, where each number is a fraction (0 to 1) of the image's width or height, measured from the top-left corner. So `[0.5, 0, 1, 0.5]` is the top-right quarter. The judge sees the picture turned upright (EXIF rotation applied) and only shrunk, never cropped or stretched, so the same fractions mark the same spot on the upright original. The judge is asked for a tight box when a cue is a visible region and no box for whole-image cues (for example "overall lighting"). The server checks every box: numbers outside 0 to 1 are clamped to the edge, and a box that is malformed or empty (x0 must be below x1, y0 below y1) is dropped while its cue is kept. In the response, `judge.cues[].box` is `null` when there is no box. Clients written before boxes existed can ignore the field.
 5. **Override flag**. `overrode_detector` is computed by the API: true when the judge gives a decisive verdict (`likely_ai` or `likely_real`) that differs from the detector band. The model's own value is ignored.
 6. **Probability**. `probability_ai` is the number the site shows as the main figure. With `source: "judge"` it is Claude's confidence turned into P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it, `uncertain` is 0.5) and passed through the calibration map in `api/judge_calibration.json`. With `source: "detector_only"` it equals `detector.score`. See `docs/detector.md` section 9.
 7. **Fallback**. If the judge is off, times out, errors, or the daily budget is spent, you still get the detector band with `source: "detector_only"` and a `judge_unavailable_reason`.
@@ -19,6 +20,7 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 |---|---|
 | `POST /v1/check` | Multipart form with either `image` (a file) or `url` (an https link). Returns the JSON result. |
 | `GET /v1/model` | Current model version, thresholds, and eval metrics. |
+| `GET /v1/scorecard` | The current model's scorecard: per-generator catch rates and per-source false-alarm rates (see **Scorecard**). `404` if the model has none. |
 | `GET /v1/health` | `200` with `status: "ok"`. `503` with `status: "loading"` while the backbones load, or `status: "no_model"` if no model is loadable. |
 
 **Refusals.** If the judge refuses the image, the API returns `422` with detail `We can't analyse this image.` and no verdict. One `refusal` line is logged with the same fields as a check line.
@@ -45,6 +47,21 @@ The server downloads the link, so it must not be a way to reach internal machine
 
 Errors: a blocked address, a non-https link or credentials give `400` "That link can't be used.". A `401`, `403`, `404` or `410` from the host gives `400` "Couldn't fetch that image. The link may have expired or not be public." (Discord links expire after about a day). A timeout gives `504`; any other fetch failure gives `502`. Link checks count toward the rate limit like uploads.
 
+## Scorecard
+
+`GET /v1/scorecard` returns `models/current/scorecard.json` as it is. The file is written offline, never by the server:
+
+    .venv/bin/python -m ml.eval.scorecard --model-dir models/v15
+
+It uses cached features only and does not change the model's other files. Contents:
+
+- `model_version`, `date` (when the file was made) and `t_ai` (the threshold above which an image is flagged as AI).
+- `detector.clean` and `detector.compressed`: the stored images, and the cached compressed copy of each.
+  - `overall`: on `report_test`, `n`, `auroc`, `tpr_at_5fpr` (share of AI images caught when 5% of real photos are flagged) and `ece` (calibration error; lower is better).
+  - `generators`: one row per AI generator in `report_test` (generators the probes never trained on), with `n` and `catch_rate`, the share of its images scored at or above `t_ai`.
+  - `real_sources`: one row per real-photo source, with `n` and `false_alarm_rate`, the share wrongly scored at or above `t_ai`. RAISE comes from `report_test`. Rows marked `"split": "val"` (COCO, Open Images, Open Images originals) come from the validation split: the probes never trained on them, but `t_ai` was set so that at most 5% of val real photos score above it, so these rows sit near 5% by design. They show how the sources differ, not how unseen photos fare. Val has no compressed copies cached, so `compressed` lists RAISE only.
+- `judge`: the Claude judge on `report_test` (from `data/eval/judge_cache_prod.jsonl`, the answers for the current production prompt): `n`, `accuracy` (decisive and right; `uncertain` counts as wrong), `uncertain_rate`, and `calibrated_ece` from `api/judge_calibration.json`. `null` if those files are missing.
+
 ## Model loading and hot reload
 
 `models/current` is a symlink to a folder such as `models/v3` holding one probe JSON per backbone plus `meta.json`. On every request the API checks where the link points. If it moved (the nightly loop promoted a new model, or you rolled back), the API loads the new folder with no restart. If the new folder is broken, it keeps serving the old model and logs the error.
@@ -56,7 +73,7 @@ The backbones themselves are loaded lazily on first use through `ml.features.bac
 With `SIXFINGERS_JUDGE_BACKEND=command`, the API runs the program in `SIXFINGERS_JUDGE_CMD` once per judged image.
 
 - **Request** (JSON on stdin): `model`, `system`, `evidence` (the provenance JSON as text, plus the question), `image` (`{"media_type": "image/jpeg", "data": <base64>}`), `schema` (the JSON schema of the verdict), `max_tokens`.
-- **Verdict** (JSON on stdout, exit 0): the judge output fields `verdict`, `confidence`, `cues`, `explanation`, `overrode_detector`.
+- **Verdict** (JSON on stdout, exit 0): the judge output fields `verdict`, `confidence`, `cues` (each with `region`, `cue` and an optional `box`), `explanation`, `overrode_detector`.
 - **Temporarily unavailable**: exit 75 with stdout `{"retry_after_s": N}`. The API answers `detector_only` with reason `error`. `ml.judge_eval` waits `N` seconds (default 1800) and resumes from its cache.
 - **Anything else** (other exit codes or invalid JSON) answers `detector_only` with reason `error`. No answer within 120 seconds answers `detector_only` with reason `timeout`.
 
@@ -90,4 +107,4 @@ Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG, a
 
 ## Tests
 
-`make test` runs `tests/api/`. A fake Anthropic client covers success, timeout, error, refusal (422) and budget cases, plus the image-only prompt, the computed override flag and detector/judge concurrency. A fake `models/vN` folder and a stub embedder cover the rest, including 413/415/429 and hot reload. `tests/api/test_fetch.py` covers links with mocked DNS and HTTP: blocked addresses, redirects, size cap, timeouts and the vetted-IP connection. No network, no real API calls.
+`make test` runs `tests/api/`. A fake Anthropic client covers success, timeout, error, refusal (422) and budget cases, plus the image-only prompt, the computed override flag and detector/judge concurrency. `tests/api/test_boxes.py` covers box checks (clamping, dropping bad boxes, keeping the cue). `tests/api/test_scorecard.py` covers `GET /v1/scorecard` and builds a scorecard from a tiny fake manifest. A fake `models/vN` folder and a stub embedder cover the rest, including 413/415/429 and hot reload. `tests/api/test_fetch.py` covers links with mocked DNS and HTTP: blocked addresses, redirects, size cap, timeouts and the vetted-IP connection. No network, no real API calls.

@@ -1,9 +1,10 @@
 """Pydantic models for the HTTP API. /v1/check response shape is frozen."""
 from __future__ import annotations
 
+import math
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Verdict = Literal["likely_ai", "uncertain", "likely_real"]
 
@@ -11,6 +12,20 @@ Verdict = Literal["likely_ai", "uncertain", "likely_real"]
 class Cue(BaseModel):
     region: str
     cue: str
+    box: list[float] | None = Field(None, description=(
+        "Tight box around the cue as [x0, y0, x1, y1], fractions 0-1 of image width and height from the top-left; "
+        "null for whole-image cues"))
+
+    @field_validator("box", mode="before")
+    @classmethod
+    def _clean_box(cls, v):
+        """Clamp to [0, 1]; a malformed or empty box becomes None so the cue itself is kept."""
+        if not isinstance(v, (list, tuple)) or len(v) != 4:
+            return None
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in v):
+            return None
+        x0, y0, x1, y1 = (min(max(float(x), 0.0), 1.0) for x in v)
+        return [x0, y0, x1, y1] if x0 < x1 and y0 < y1 else None
 
 
 class JudgeResult(BaseModel):
