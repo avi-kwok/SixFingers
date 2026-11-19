@@ -126,7 +126,7 @@ def test_judge_cap_and_cache(env, monkeypatch):
     assert len(calls) == n1  # fully cached
     assert "Judge comparison" in (env / "results.md").read_text()
     # tiny cap stops before the first call and never overspends
-    (env / "data" / "eval" / "judge_cache.jsonl").unlink()
+    (env / "data" / "eval" / "judge_cache_prod.jsonl").unlink()
     calls.clear()
     j.main(["--approve-spend", "0.0001", "--n", "6"], client=client)
     assert calls == []

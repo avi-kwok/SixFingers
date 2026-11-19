@@ -49,7 +49,7 @@ def test_command_backend_waits_on_75_and_resumes(env, tmp_path, monkeypatch):
     assert sleeps == [5]
     sl = j.stratified(store.load_manifest().query("split == 'report_test'"), 4)
     arms = [a for a, m, _ in j.ARMS if m is not None]
-    rows = [json.loads(line) for line in (data_dir() / "eval" / "judge_cache.jsonl").read_text().splitlines()]
+    rows = [json.loads(line) for line in (data_dir() / "eval" / "judge_cache_prod.jsonl").read_text().splitlines()]
     assert {(r["arm"], r["image_id"]) for r in rows} == {(a, i) for a in arms for i in sl.image_id}
     assert all(r["verdict"] != "error" for r in rows)
     assert "Backend: command" in (env / "results.md").read_text()
@@ -61,3 +61,22 @@ def test_exit_75_without_stdout_waits_default(env, tmp_path, monkeypatch):
     sleeps = _prepare(monkeypatch, tmp_path, cmd)
     j.main(["--approve-spend", "10", "--n", "4"])
     assert sleeps == [1800]
+
+
+def test_bad_image_caches_error_row_and_run_continues(env, tmp_path, monkeypatch):
+    from api.validate import UploadError, validate_upload
+    from ml.common.paths import data_dir
+    from ml.judge_eval import run as j
+    _prepare(monkeypatch, tmp_path, _judge_script(tmp_path, fail_at=0, fail_stdout=None))
+    seen = []
+
+    def flaky(data):
+        seen.append(1)
+        if len(seen) == 1:
+            raise UploadError(400, "Could not read this image.")
+        return validate_upload(data)
+    monkeypatch.setattr(j, "validate_upload", flaky)
+    j.main(["--approve-spend", "10", "--n", "4"])
+    rows = [json.loads(line) for line in (data_dir() / "eval" / "judge_cache_prod.jsonl").read_text().splitlines()]
+    assert sum(r.get("error") == "invalid_image" for r in rows) == 1
+    assert len(rows) == len(seen) > 1  # every other image was still judged

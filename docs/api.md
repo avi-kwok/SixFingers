@@ -5,7 +5,7 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 ## What happens to one picture (`POST /v1/check`)
 
 0. **Input**. Send exactly one of the multipart file `image` or the form field `url` (an https link). Both or neither gives `400`. For a link, `api/fetch.py` downloads it first, in memory, then the bytes follow the same path as an upload (see **Fetching links**).
-1. **Validate** (`api/validate.py`). We look at the first bytes of the file to see if it is really a JPEG, PNG or WebP (file names lie). More than 10 MB gives `413`. A wrong type gives `415`. A file with more than 40 million pixels is refused too, because tiny files can unpack into enormous images ("decompression bombs"). Nothing is written to disk.
+1. **Validate** (`api/validate.py`). We look at the first bytes of the file to see if it is really a JPEG, PNG or WebP (file names lie). More than 10 MB gives `413`. A wrong type gives `415`. A file with more than 25 million pixels is refused too, because tiny files can unpack into enormous images ("decompression bombs"). Nothing is written to disk.
 2. **Provenance** (`api/provenance.py`). Some tools sign AI images with a C2PA manifest, or leave hints in metadata (like `trainedAlgorithmicMedia`). We report what we find. Finding nothing proves nothing, since metadata is easily stripped.
 3. **Detector** (`api/detector.py`). Each backbone (a big pretrained vision model) turns the picture into a list of numbers (an embedding). A small "probe" per backbone turns that into a score from 0 to 1. We average the scores in logit space, giving one ensemble score. Two thresholds from `meta.json` turn it into a band: `likely_ai`, `uncertain` or `likely_real`.
 4. **Judge** (`api/judge.py`). The judge starts at the same time as the detector, so total time is about the slower of the two. It sees the picture and the provenance findings, never the detector scores (in a 300-image comparison the image-only judge was more accurate). It returns a structured answer (verdict, confidence, cues, a short explanation). The backend is chosen by environment variable: by default Claude Haiku through the Anthropic API (low effort, 15 second timeout), or a local command (see below).
@@ -19,11 +19,11 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 |---|---|
 | `POST /v1/check` | Multipart form with either `image` (a file) or `url` (an https link). Returns the JSON result. |
 | `GET /v1/model` | Current model version, thresholds, and eval metrics. |
-| `GET /v1/health` | `200 ok`, or `503` if no model is loadable. |
+| `GET /v1/health` | `200` with `status: "ok"`. `503` with `status: "loading"` while the backbones load, or `status: "no_model"` if no model is loadable. |
 
 **Refusals.** If the judge refuses the image, the API returns `422` with detail `We can't analyse this image.` and no verdict. One `refusal` line is logged with the same fields as a check line.
 
-Errors: `400` unreadable image, both or neither of `image` and `url`, or an unusable link, `413` too big, `415` wrong type, `422` the judge refused the image, `429` too many checks (see `Retry-After`), `502` the link could not be fetched, `503` no model, `504` the link timed out.
+Errors: `400` unreadable image, both or neither of `image` and `url`, or an unusable link, `413` too big, `415` wrong type, `422` the judge refused the image, `429` too many checks (see `Retry-After`), `502` the link could not be fetched, `503` no model, or busy (no free analysis slot within 5 seconds), `504` the link timed out.
 
 Try it:
 
@@ -40,6 +40,7 @@ The server downloads the link, so it must not be a way to reach internal machine
 - The connection goes to the checked IP address, never to a second lookup, so DNS rebinding cannot swap the address. TLS server name, certificate check and the `Host` header still use the original host name.
 - Up to 3 redirects, each followed by hand and checked with the same rules.
 - 5 second connect timeout, 10 seconds in total. The body is streamed and stops at the 10 MB cap. No cookies; the `User-Agent` is `SixFingers/1.0`.
+- The 10 seconds starts when the fetch begins and includes DNS lookups. Everything else (connect, TLS handshake, headers, every redirect hop and the body) is cut off at the deadline. A DNS lookup cannot be cut off, so a slow one can run past 10 seconds; the fetch then stops with `504` right after it. Socket timeouts alone restart on every byte, so a server sending one byte every few seconds could hold a worker forever. A timer shuts the connection down at the deadline instead, and the request gets `504`.
 - Nothing is written to disk.
 
 Errors: a blocked address, a non-https link or credentials give `400` "That link can't be used.". A `401`, `403`, `404` or `410` from the host gives `400` "Couldn't fetch that image. The link may have expired or not be public." (Discord links expire after about a day). A timeout gives `504`; any other fetch failure gives `502`. Link checks count toward the rate limit like uploads.
@@ -64,7 +65,11 @@ Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG, a
 ## Limits and guardrails
 
 - **Rate limit**: 10 checks per IP per hour. We store only a hash of the IP mixed with a secret salt and today's date, so it changes daily. It lives in memory, so a restart resets it (fine for one worker).
-- **Judge budget**: about 500 Claude calls per day (`SIXFINGERS_JUDGE_BUDGET`). The counter is saved in `data/judge_budget.json`, so restarts do not reset it.
+- **Judge budget**: about 500 Claude calls per day (`SIXFINGERS_JUDGE_BUDGET`). The counter is saved in `data/judge_budget.json`, so restarts do not reset it. If the detector fails, a judge call that has not started yet is cancelled and costs nothing; one that already ran stays counted, because it was paid for.
+- **Judge share per IP**: one IP gets at most 20 judge calls per day (`SIXFINGERS_JUDGE_PER_IP_DAY`), so a few visitors cannot use up the whole daily budget. After that, the IP still gets checks, but as `source: "detector_only"` with `judge_unavailable_reason: "budget"`.
+- **Image size**: at most 10 MB and 25 megapixels. A decoded image takes about 3 bytes per pixel in memory, so this cap keeps one check to a few hundred MB at most.
+- **Concurrent checks**: at most 2 images are decoded and scored at the same time (`SIXFINGERS_MAX_CONCURRENT`). A check that cannot start within 5 seconds gets `503` "SixFingers is busy right now. Try again in a minute." The judge's downscaled copy (at most 1568 px) is made inside the slot; the judge call itself does not hold one.
+- **Startup**: the backbones load in the background when the server starts. Until they are in memory, `GET /v1/health` answers `503` with `status: "loading"`, so a health check only passes once checks are fast.
 - **CORS**: only `https://sixfingers.avikwok.dev` may call the API from a browser. Set `SIXFINGERS_DEV=1` to also allow `localhost:3000`.
 - **Logs**: one JSON line per check (time, verdict, source, score, dimensions, format, latency, model version, IP hash, and `input`: `file` or `link`). For links only the host name is logged, never the full URL, which can carry a signed token. Never image bytes or image hashes. Every time the judge disagrees with the detector, an `override` line is logged; every refusal logs a `refusal` line.
 
@@ -76,6 +81,8 @@ Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG, a
 | `SIXFINGERS_JUDGE_BACKEND` | Judge backend: `api` (default) or `command`. |
 | `SIXFINGERS_JUDGE_CMD` | Command line for the `command` backend, for example `python3 /path/to/judge.py`. |
 | `SIXFINGERS_JUDGE_BUDGET` | Daily judge calls, default 500. |
+| `SIXFINGERS_JUDGE_PER_IP_DAY` | Judge calls per IP per day, default 20. |
+| `SIXFINGERS_MAX_CONCURRENT` | Images decoded and scored at the same time, default 2. |
 | `SIXFINGERS_IP_SALT` | Optional fixed salt; random per start if unset. |
 | `SIXFINGERS_TRUST_PROXY` | Set to `1` behind Caddy so the real client IP is read from `X-Forwarded-For`. |
 | `SIXFINGERS_CORS_ORIGINS` | Comma-separated allowed origins. |

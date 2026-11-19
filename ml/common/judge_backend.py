@@ -29,9 +29,16 @@ class BackendError(Exception):
         self.reason, self.retry_after_s = reason, retry_after_s
 
 
-def prepare_image(data: bytes) -> bytes:
+def downscale(data: bytes) -> Image.Image:
+    """Decode, turn upright and shrink to the judge's size. The full-size decode happens here."""
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     img.thumbnail((MAX_EDGE, MAX_EDGE), Image.Resampling.LANCZOS)  # never upscales
+    return img
+
+
+def prepare_image(data: bytes | Image.Image) -> bytes:
+    """JPEG for the judge, from image bytes or from an image downscale() already made."""
+    img = data if isinstance(data, Image.Image) else downscale(data)
     quality = 90
     while True:
         buf = io.BytesIO()

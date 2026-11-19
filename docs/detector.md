@@ -61,20 +61,20 @@ The backend is chosen by the same switch the API uses: `SIXFINGERS_JUDGE_BACKEND
 
 ## 9. Calibration
 
-The detector score is already calibrated with temperature scaling. Claude's answer is calibrated separately. First, `python -m ml.judge_eval.run --split val --arms haiku_blind` asks Claude about 300 `val` images and caches the answers in `data/eval/judge_cache.jsonl`. Then `python -m ml.judge_eval.calibrate` converts each decisive answer to a raw P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it) and fits a monotone map to the true labels. It tries isotonic regression and Platt scaling, keeps the one with the lower cross-validated Brier score on `val` (Platt), and writes piecewise-linear knots to `api/judge_calibration.json` with the model, arm and n. Outputs are clipped to 2%-98%.
+The detector score is already calibrated with temperature scaling. Claude's answer is calibrated separately. First, `python -m ml.judge_eval.run --split val --arms haiku_blind` asks Claude about 300 `val` images and caches the answers in `data/eval/judge_cache_prod.jsonl`, the default cache for both `run` and `calibrate`. Older answers from an earlier prompt stay in `data/eval/judge_cache.jsonl` and are not refit. The run sends exactly what the live API sends: the production prompt (`SYSTEM` in `api/judge.py`) and the provenance text read from the image itself, with no detector scores. A different prompt can change how confident the judge is, so a map fitted on one prompt does not carry over to another. Then `python -m ml.judge_eval.calibrate` converts each decisive answer to a raw P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it) and fits a monotone map to the true labels. It tries isotonic regression and Platt scaling, keeps the one with the lower cross-validated Brier score on `val` (Platt), and writes piecewise-linear knots to `api/judge_calibration.json` with the model, arm and n. Outputs are clipped to 2%-98%.
 
 An `uncertain` answer is not fitted. The API maps it to 0.5, because Claude did not lean either way.
 
-The map never sees `report_test`, so the `report_test` rows below are an honest out-of-sample check (297 decisive answers). ECE uses 10 equal-width bins.
+The map never sees `report_test`, so the `report_test` rows below are an honest out-of-sample check (294 decisive answers out of 300; the fit used 277 out of 300 on `val`). ECE uses 10 equal-width bins.
 
 | | ECE | Brier |
 |---|---|---|
-| `val`, raw | 0.175 | 0.0573 |
-| `val`, Platt (5-fold CV) | 0.020 | 0.0247 |
-| `report_test`, raw | 0.186 | 0.0498 |
-| `report_test`, calibrated | 0.026 | 0.0127 |
+| `val`, raw | 0.204 | 0.0694 |
+| `val`, Platt (5-fold CV) | 0.018 | 0.0245 |
+| `report_test`, raw | 0.229 | 0.0638 |
+| `report_test`, calibrated | 0.028 | 0.0097 |
 
-Refit it if the judge model or prompt changes.
+Refit it if the judge model or prompt changes. Pass `--cache <new file>` to both commands so old answers from the previous prompt are not reused.
 
 ## Known limits
 

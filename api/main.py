@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,6 +30,7 @@ log = logging.getLogger("sixfingers")
 PROD_ORIGIN = "https://sixfingers.avikwok.dev"
 DISCLAIMER = ("This is an estimate, not proof. It only covers fully AI-generated still images; edited, "
               "inpainted or upscaled images are out of scope. Do not use it as the sole basis for decisions.")
+BUSY_WAIT_S = 5  # how long a check waits for a free analysis slot before answering 503
 
 
 _CAL = json.loads((Path(__file__).parent / "judge_calibration.json").read_text())["points"]
@@ -69,7 +72,14 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
                budget_path: Path | None = None, budget_limit: int | None = None,
                rate_limit: int = 10) -> FastAPI:
     _setup_logging()
-    app = FastAPI(title="SixFingers", docs_url=None, redoc_url=None)
+    store = DetectorStore(embedder or FeatureEmbedder(), models_dir)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        threading.Thread(target=store.warm, daemon=True).start()  # /v1/health answers 503 until this finishes
+        yield
+
+    app = FastAPI(title="SixFingers", docs_url=None, redoc_url=None, lifespan=lifespan)
     origins = os.environ.get("SIXFINGERS_CORS_ORIGINS", PROD_ORIGIN).split(",")
     if os.environ.get("SIXFINGERS_DEV") == "1":
         origins += ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -82,11 +92,14 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
             return JSONResponse({"detail": "Image is larger than 10 MB."}, 413)
         return await call_next(request)
 
-    store = DetectorStore(embedder or FeatureEmbedder(), models_dir)
     client = _make_client() if anthropic_client == "auto" else anthropic_client
     limit = budget_limit if budget_limit is not None else int(os.environ.get("SIXFINGERS_JUDGE_BUDGET", 500))
     judge = Judge(judge_backend.from_env(client), Budget(budget_path or paths.data_dir() / "judge_budget.json", limit))
     limiter = RateLimiter(rate_limit)
+    # ip_hash changes at the UTC day change, so this rolling 24 h window is a per-day judge share per IP
+    judge_quota = RateLimiter(int(os.environ.get("SIXFINGERS_JUDGE_PER_IP_DAY", 20)), window_s=86400)
+    # decoding and embedding a large image costs hundreds of MB, so only a few run at once
+    heavy = threading.BoundedSemaphore(int(os.environ.get("SIXFINGERS_MAX_CONCURRENT", 2)))
     pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="judge")
     app.state.store, app.state.judge, app.state.limiter = store, judge, limiter
 
@@ -109,23 +122,44 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
             raise HTTPException(429, "Too many checks. Try again later.", headers={"Retry-After": str(wait)})
         try:
             data = fetch_image(url) if url is not None else image.file.read(MAX_BYTES + 1)  # never buffer more than the cap
-            checked = validate_upload(data)
         except UploadError as e:
             raise HTTPException(e.status, e.detail) from None
-        t1 = time.perf_counter()
-        src = {"input": "link", "host": urlsplit(url.strip()).hostname} if url is not None else {"input": "file"}
-        prov = read_provenance(data, checked.mime, checked.image)
-        t2 = time.perf_counter()
-        jfut = pool.submit(judge.judge, data, checked.mime, prov)  # runs while the detector scores
+        if not heavy.acquire(timeout=BUSY_WAIT_S):
+            raise HTTPException(503, "SixFingers is busy right now. Try again in a minute.")
+        det = jfut = None
         try:
-            det, version = store.score(checked.image)
-        except Exception:
-            log.exception("detector failed")
-            raise HTTPException(503, "Detector model is not available.") from None
-        t3 = time.perf_counter()
+            try:
+                checked = validate_upload(data)
+            except UploadError as e:
+                raise HTTPException(e.status, e.detail) from None
+            t1 = time.perf_counter()
+            src = {"input": "link", "host": urlsplit(url.strip()).hostname} if url is not None else {"input": "file"}
+            prov = read_provenance(data, checked.mime, checked.image)
+            t2 = time.perf_counter()
+            try:
+                store.get()  # no model: fail before the judge spends budget
+                if not (judge.enabled and judge_quota.allow(ip_hash)):  # allow() returns 0 when under quota
+                    try:
+                        small = judge_backend.downscale(data) if judge.enabled else b""  # decode under the semaphore; skip when the judge is off
+                    except Exception:
+                        small = b""  # unreadable for the judge: it answers "error", as when its own decode failed
+                    jfut = pool.submit(judge.judge, small, checked.mime, prov)  # runs while the detector scores
+                det, version = store.score(checked.image)
+            except Exception:
+                log.exception("detector failed")
+            t3 = time.perf_counter()
+            checked.image = None  # free the decoded pixels while waiting for the judge
+        finally:
+            heavy.release()
+        if det is None:
+            if jfut is not None:
+                jfut.cancel()  # a judge call that already started is paid for, so its budget stays spent
+            raise HTTPException(503, "Detector model is not available.")
         verdict, source, jres, reason = det.band, "detector_only", None, None
         prob = det.score
         try:
+            if jfut is None:
+                raise JudgeUnavailable("budget")  # this IP has used its daily judge share
             out = jfut.result()
             verdict, source = out.verdict, "judge"
             prob = judge_probability(out.verdict, out.confidence)
@@ -164,9 +198,12 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
     @app.get("/v1/health")
     def health():
         try:
-            return {"status": "ok", "model_version": store.get().version, "judge_enabled": judge.enabled}
+            version = store.get().version
+            status = "ok" if store.ready() else "loading"
         except Exception:
-            return JSONResponse({"status": "no_model", "model_version": None, "judge_enabled": judge.enabled}, 503)
+            version, status = None, "no_model"
+        body = {"status": status, "model_version": version, "judge_enabled": judge.enabled}
+        return body if status == "ok" else JSONResponse(body, 503)
 
     return app
 

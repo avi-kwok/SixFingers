@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from PIL import Image
 
 MAX_BYTES = 10 * 1024 * 1024
-MAX_PIXELS = 40_000_000  # blocks decompression bombs before the pixels are decoded
+MAX_PIXELS = 25_000_000  # bounds decode memory (~75 MB RGB); blocks decompression bombs before the pixels are decoded
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
@@ -47,7 +47,7 @@ def validate_upload(data: bytes) -> Checked:
         img = Image.open(io.BytesIO(data))
         w, h = img.size  # header only, no decode yet
         if w * h > MAX_PIXELS:
-            raise UploadError(413, "Image has too many pixels (limit 40 megapixels).")
+            raise UploadError(413, f"Image has too many pixels (limit {MAX_PIXELS // 1_000_000} megapixels).")
         img.load()
         return Checked(img.convert("RGB"), kind[0], w, h, kind[1])
     except UploadError:

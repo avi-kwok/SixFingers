@@ -25,7 +25,7 @@ def test_judge_success_and_request_shape(build):
     j = post(build(fake), img_bytes(255)).json()
     assert j["source"] == "judge" and j["verdict"] == "likely_real"
     assert j["judge"]["overrode_detector"] is True and j["judge_unavailable_reason"] is None
-    assert abs(j["probability_ai"] - 0.2818) < 1e-3  # likely_real at 0.7 -> raw 0.3 -> calibrated
+    assert abs(j["probability_ai"] - 0.1056) < 1e-3  # likely_real at 0.7 -> raw 0.3 -> calibrated
     kw = fake.calls[0]
     assert kw["model"] == "claude-haiku-5-5" and kw["output_config"]["effort"] == "low"
     assert kw["output_config"]["format"]["type"] == "json_schema"

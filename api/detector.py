@@ -3,6 +3,7 @@ import io
 import logging
 import os
 import threading
+import weakref
 from pathlib import Path
 from typing import Protocol
 
@@ -24,19 +25,32 @@ class Embedder(Protocol):
 
 
 class FeatureEmbedder:
-    """Production embedder: lazy-loads each backbone once via ml.features."""
+    """Production embedder: loads each backbone once via ml.features (at startup, or on first use)."""
 
     def __init__(self):
         self._loaded: dict = {}
+        self._lock = threading.Lock()
+        self._last: tuple = (None, None)  # (weakref to input image, normalized copy), shared by all backbones
+
+    def load(self, backbone):
+        with self._lock:  # concurrent first requests must not load the same backbone twice
+            if backbone not in self._loaded:
+                # integration point: ml.features must expose load_backbone(name) -> object with embed(list[PIL]) -> ndarray
+                from ml.features.backbones import load_backbone
+                self._loaded[backbone] = load_backbone(backbone)
+            return self._loaded[backbone]
+
+    def loaded(self, backbone) -> bool:
+        return backbone in self._loaded
 
     def embed(self, backbone, image):
-        if backbone not in self._loaded:
-            # integration point: ml.features must expose load_backbone(name) -> object with embed(list[PIL]) -> ndarray
-            from ml.features.backbones import load_backbone
-            self._loaded[backbone] = load_backbone(backbone)
-        from ml.data.normalize import encode, normalize_image  # same resize/crop/JPEG q95 as training
-        norm = Image.open(io.BytesIO(encode(normalize_image(image)))).convert("RGB")
-        return np.asarray(self._loaded[backbone].embed([norm]), dtype=np.float32)
+        model = self._loaded.get(backbone) or self.load(backbone)
+        ref, norm = self._last
+        if ref is None or ref() is not image:
+            from ml.data.normalize import encode, normalize_image  # same resize/crop/JPEG q95 as training
+            norm = Image.open(io.BytesIO(encode(normalize_image(image)))).convert("RGB")
+            self._last = (weakref.ref(image), norm)
+        return np.asarray(model.embed([norm]), dtype=np.float32)
 
 
 class LoadedModel:
@@ -67,6 +81,21 @@ class DetectorStore:
                     raise
                 log.exception("model reload failed; keeping %s", self._model.version)
             return self._model
+
+    def warm(self) -> None:
+        """Load the current model's backbones now so /v1/health turns ready and the first check is fast."""
+        load = getattr(self.embedder, "load", None)
+        try:
+            for b in self.get().meta.backbones:
+                if load:
+                    load(b)
+        except Exception:
+            log.exception("warm-up failed; backbones load on the first check")
+
+    def ready(self) -> bool:
+        """True once every backbone of the current model is in memory. Raises if no model is loadable."""
+        loaded = getattr(self.embedder, "loaded", None)  # test embedders have nothing to load
+        return all(loaded(b) for b in self.get().meta.backbones) if loaded else True
 
     def score(self, image: Image.Image) -> tuple[DetectorResult, str]:
         m = self.get()

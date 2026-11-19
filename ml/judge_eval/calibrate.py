@@ -2,7 +2,7 @@
 
     python -m ml.judge_eval.calibrate
 
-Reads data/eval/judge_cache.jsonl (arm haiku_blind) and the manifest labels. Fits on val images
+Reads data/eval/judge_cache_prod.jsonl (arm haiku_blind) and the manifest labels. Fits on val images
 (python -m ml.judge_eval.run --split val --arms haiku_blind) and reports the fitted map on report_test images,
 which the fit never sees. Writes api/judge_calibration.json: piecewise-linear knots the API interpolates.
 'uncertain' verdicts are not fitted: the API maps them to 0.5.
@@ -48,19 +48,22 @@ def fit_platt(x, y):
     return lambda q: np.clip(m.predict_proba(q.reshape(-1, 1))[:, 1], *CLIP), m
 
 
-def load(split: str):
+def load(split: str, cache: Path):
     man = pd.read_parquet(paths.data_dir() / "manifest.parquet").set_index("image_id")
     man = man[man.split == split]["label"]
-    rows = [r for r in map(json.loads, open(paths.data_dir() / "eval" / "judge_cache.jsonl"))
+    rows = [r for r in map(json.loads, open(cache))
             if r["arm"] == ARM and r.get("verdict") in ("likely_ai", "likely_real") and r["image_id"] in man.index]
     x = np.array([raw_p_ai(r["verdict"], r["confidence"]) for r in rows])
     return x, man.loc[[r["image_id"] for r in rows]].to_numpy(float)
 
 
 def main():
-    argparse.ArgumentParser(description=__doc__).parse_args()
-    x, y = load("val")
-    xt, yt = load("report_test")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--cache", default=None, help="answer cache file (default data/eval/judge_cache_prod.jsonl)")
+    a = ap.parse_args()
+    cache = Path(a.cache) if a.cache else paths.data_dir() / "eval" / "judge_cache_prod.jsonl"
+    x, y = load("val", cache)
+    xt, yt = load("report_test", cache)
     cv = list(StratifiedKFold(5, shuffle=True, random_state=0).split(x, y))
     res = {"raw": {"ece": ece(x, y), "brier": brier(x, y)}}
     for name, fit in (("isotonic", fit_iso), ("platt", fit_platt)):
