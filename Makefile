@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: setup data features train eval serve test smoke full
+.PHONY: setup data features train eval serve test feedback smoke full
 
 setup:
 	python3.11 -m venv .venv
@@ -24,6 +24,10 @@ serve:
 
 test:
 	$(PY) -m pytest tests -q
+
+# daily check totals, and feedback rows to data/feedback.csv
+feedback:
+	$(PY) -m ml.eval.feedback_report
 
 # smoke scale
 smoke:

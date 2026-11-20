@@ -1,9 +1,9 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ACCEPT, ApiError, MAX_BYTES, MOCK, checkImage, getModel } from "@/lib/api";
-import type { CheckResponse, Verdict } from "@/lib/types";
+import { ACCEPT, ApiError, MAX_BYTES, MOCK, checkImage, getModel, sendFeedback } from "@/lib/api";
+import type { CheckResponse, FeedbackBody, Verdict } from "@/lib/types";
 
 const LABEL: Record<Verdict, string> = {
   likely_ai: "Likely AI-generated",
@@ -141,6 +141,7 @@ export default function Home() {
       <div aria-live="polite" className="report">
         {error && <div className="card err" role="alert">{error}</div>}
         {result && <ResultCard r={result} preview={preview} name={file?.name} />}
+        {result?.check_id && !MOCK && <FeedbackCard key={result.check_id} checkId={result.check_id} />}
       </div>
     </>
   );
@@ -245,6 +246,67 @@ function ResultCard({ r, preview, name }: { r: CheckResponse; preview: string | 
         <button type="button" onClick={download}>Download report</button>{" "}
         <small className="muted">Opens the print dialog; choose &quot;Save as PDF&quot;. Made in your browser, nothing is uploaded or stored.</small>
       </p>
+    </section>
+  );
+}
+
+type Answer = FeedbackBody["answer"];
+type Actual = NonNullable<FeedbackBody["actual"]>;
+const ANSWERS: [Answer, string][] = [["right", "Right"], ["wrong", "Wrong"], ["unsure", "Not sure"]];
+const ACTUALS: [Actual, string][] = [["ai", "AI-made"], ["real", "Real"], ["unknown", "Don't know"]];
+const MAX_COMMENT = 500;
+
+function Choices<T extends string>({ label, options, value, onPick }: { label: string; options: [T, string][]; value: T | null; onPick: (v: T) => void }) {
+  return (
+    <fieldset className="choices">
+      <legend>{label}</legend>
+      {options.map(([v, text]) => (
+        <button key={v} type="button" className="choice" aria-pressed={value === v} onClick={() => onPick(v)}>{text}</button>
+      ))}
+    </fieldset>
+  );
+}
+
+function FeedbackCard({ checkId }: { checkId: string }) {
+  const [answer, setAnswer] = useState<Answer | null>(null);
+  const [actual, setActual] = useState<Actual | null>(null);
+  const [comment, setComment] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (sent) {
+    return <section className="card no-print" aria-label="Feedback"><p role="status" style={{ margin: 0 }}>Thank you. Your answer helps us see how often SixFingers gets it right.</p></section>;
+  }
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!answer) return;
+    setSending(true);
+    setError(null);
+    try {
+      await sendFeedback({ check_id: checkId, answer, ...(actual && { actual }), ...(comment.trim() && { comment: comment.trim() }) });
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Feedback could not be sent. Try again later.");
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <section className="card no-print feedback" aria-label="Feedback">
+      <form onSubmit={submit}>
+        <Choices label="Was this right?" options={ANSWERS} value={answer} onPick={setAnswer} />
+        {answer && (
+          <>
+            <Choices label="What was it really? (optional)" options={ACTUALS} value={actual} onPick={setActual} />
+            <label htmlFor="fb-comment">Comment (optional)</label>
+            <textarea id="fb-comment" rows={3} maxLength={MAX_COMMENT} value={comment} aria-describedby="fb-hint" onChange={(e) => setComment(e.target.value)} />
+            <p id="fb-hint" className="muted"><small>{comment.length}/{MAX_COMMENT} characters. Please do not type names, contact details or other personal information. <Link href="/privacy">What we store</Link></small></p>
+            <button type="submit" disabled={sending}>{sending ? "Sending…" : "Send"}</button>
+          </>
+        )}
+        {error && <p className="fb-err" role="alert">{error}</p>}
+      </form>
     </section>
   );
 }

@@ -94,9 +94,12 @@ It runs at 09:00 UTC (01:00 Pacific in winter, 02:00 in summer). Cron on Ubuntu 
 | Caddy logs | `journalctl -u caddy -f` |
 | Restart API | `sudo systemctl restart sixfingers-api` |
 | Nightly loop log | `tail -n 50 ~/SixFingers/data/loop.log` |
+| Usage totals and feedback | `cd ~/SixFingers && make feedback` (prints daily totals, writes `data/feedback.csv`) |
 | Run loop by hand | `cd ~/SixFingers && bash deploy/run_loop.sh` |
 | Roll back the model | `cd ~/SixFingers && .venv/bin/python -m ml.loop.run rollback` (or `rollback v3`) |
 | Update code | `cd ~/SixFingers && git pull && bash deploy/setup.sh` (add `SIXFINGERS_ENABLE_LOOP=1` before `bash` if the loop is on) |
+
+Usage counts and feedback live in `data/usage.sqlite`. `git pull` and `setup.sh` never touch `data/`, so they survive updates. To back it up (for example before moving to a new VM), stop the API so no write is half done, copy the file, and start it again: `sudo systemctl stop sixfingers-api && cp ~/SixFingers/data/usage.sqlite ~/usage-backup.sqlite && sudo systemctl start sixfingers-api`. It holds no IPs or images; see `docs/api.md`, **Usage counts and feedback**.
 
 The API notices the `models/current` symlink changing and reloads by itself, so a rollback needs no restart.
 

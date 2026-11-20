@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -89,3 +90,22 @@ class CheckResponse(BaseModel):
     model_version: str
     timings_ms: Timings
     disclaimer: str
+    check_id: str | None = None  # random id for POST /v1/feedback; None when usage storage failed
+
+
+class FeedbackIn(BaseModel):
+    """POST /v1/feedback body. Unknown fields are rejected."""
+    model_config = {"extra": "forbid"}
+    check_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    answer: Literal["right", "wrong", "unsure"]
+    actual: Literal["ai", "real", "unknown"] | None = None
+    comment: str | None = Field(None, max_length=500)
+
+    @field_validator("comment")
+    @classmethod
+    def _strip_controls(cls, v):
+        """Drop control characters (newlines are kept); a blank comment becomes None."""
+        if v is None:
+            return None
+        v = "".join(ch for ch in v if ch == "\n" or unicodedata.category(ch) != "Cc").strip()
+        return v or None

@@ -31,6 +31,7 @@ export default async function ScorecardPage() {
   const { clean, compressed: comp } = s.detector;
   const j = s.judge;
   const valRows = clean.real_sources.some((r) => r.split === "val");
+  const u = s.usage;
   return (
     <>
       <h1>Scorecard</h1>
@@ -85,6 +86,27 @@ export default async function ScorecardPage() {
         {j?.calibrated_ece != null && "."}
         {" "}A number near 50% means the evidence is mixed.
       </p>
+
+      <h2>Usage</h2>
+      {u ? (
+        <>
+          <table>
+            <tbody>
+              <tr><th scope="row">Checks since launch</th><td>{u.checks_total}</td></tr>
+              <tr><th scope="row">Checks in the last 30 days</th><td>{u.checks_last_30_days}</td></tr>
+            </tbody>
+          </table>
+          <p>
+            {u.feedback_right != null
+              ? `${u.feedback_right} of ${u.feedback_answers} answers said the result was right.`
+              : "Not enough feedback yet."}
+          </p>
+          <p className="muted"><small>
+            Feedback comes from the &quot;Was this right?&quot; box under each result. Only people who chose to answer are counted,
+            and one person can answer for several checks, so this is not a measured accuracy. We show it once there are at least 20 answers.
+          </small></p>
+        </>
+      ) : <p className="muted">Usage numbers are unavailable right now.</p>}
 
       <h2>Honest limits</h2>
       <ul>

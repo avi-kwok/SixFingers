@@ -30,7 +30,13 @@ export interface CheckResponse {
   model_version: string;
   timings_ms: Timings;
   disclaimer: string;
+  check_id?: string | null;  // for POST /v1/feedback; null when the server could not store it, absent from older API versions
 }
+
+export interface FeedbackBody { check_id: string; answer: "right" | "wrong" | "unsure"; actual?: "ai" | "real" | "unknown"; comment?: string }
+
+// Live totals added to GET /v1/scorecard. feedback_right is null until there are at least 20 answers.
+export interface Usage { checks_total: number; checks_last_30_days: number; feedback_answers: number; feedback_right: number | null }
 
 // GET /v1/scorecard, written offline by ml/eval/scorecard.py. Rates are shares 0-1.
 export interface ScorecardOverall { split: string; n: number; auroc: number | null; tpr_at_5fpr: number | null; ece: number | null }
@@ -45,4 +51,5 @@ export interface Scorecard {
   t_ai: number;
   detector: { clean: ScorecardVariant; compressed: ScorecardVariant };
   judge: { model: string; split: string; n: number; accuracy: number; uncertain_rate: number; calibrated_ece: number | null; calibration_method: string } | null;
+  usage?: Usage | null;
 }

@@ -13,14 +13,16 @@ The API is a small web server (FastAPI). The website sends it a picture; it answ
 5. **Override flag**. `overrode_detector` is computed by the API: true when the judge gives a decisive verdict (`likely_ai` or `likely_real`) that differs from the detector band. The model's own value is ignored.
 6. **Probability**. `probability_ai` is the number the site shows as the main figure. With `source: "judge"` it is Claude's confidence turned into P(AI) (`likely_ai` keeps its confidence, `likely_real` uses 1 minus it, `uncertain` is 0.5) and passed through the calibration map in `api/judge_calibration.json`. With `source: "detector_only"` it equals `detector.score`. See `docs/detector.md` section 9.
 7. **Fallback**. If the judge is off, times out, errors, or the daily budget is spent, you still get the detector band with `source: "detector_only"` and a `judge_unavailable_reason`.
+8. **Count and check_id**. The check adds 1 to today's usage total and gets a random `check_id` (a UUID) for feedback; see **Usage counts and feedback**. If that storage write fails, the error is logged, the check still succeeds, and `check_id` is `null`.
 
 ## Endpoints
 
 | Endpoint | What it does |
 |---|---|
-| `POST /v1/check` | Multipart form with either `image` (a file) or `url` (an https link). Returns the JSON result. |
+| `POST /v1/check` | Multipart form with either `image` (a file) or `url` (an https link). Returns the JSON result, including `check_id`. |
+| `POST /v1/feedback` | JSON feedback on one result: was the verdict right? See **Usage counts and feedback**. |
 | `GET /v1/model` | Current model version, thresholds, and eval metrics. |
-| `GET /v1/scorecard` | The current model's scorecard: per-generator catch rates and per-source false-alarm rates (see **Scorecard**). `404` if the model has none. |
+| `GET /v1/scorecard` | The current model's scorecard: per-generator catch rates and per-source false-alarm rates, plus live usage totals (see **Scorecard**). `404` if the model has none. |
 | `GET /v1/health` | `200` with `status: "ok"`. `503` with `status: "loading"` while the backbones load, or `status: "no_model"` if no model is loadable. |
 
 **Refusals.** If the judge refuses the image, the API returns `422` with detail `We can't analyse this image.` and no verdict. One `refusal` line is logged with the same fields as a check line.
@@ -51,7 +53,7 @@ Errors: a blocked address, a non-https link or credentials give `400` "That link
 
 `GET /v1/scorecard` returns `models/current/scorecard.json` as it is. The file is written offline, never by the server:
 
-    .venv/bin/python -m ml.eval.scorecard --model-dir models/v15
+    .venv/bin/python -m ml.eval.scorecard --model-dir models/v16
 
 It uses cached features only and does not change the model's other files. Contents:
 
@@ -60,7 +62,33 @@ It uses cached features only and does not change the model's other files. Conten
   - `overall`: on `report_test`, `n`, `auroc`, `tpr_at_5fpr` (share of AI images caught when 5% of real photos are flagged) and `ece` (calibration error; lower is better).
   - `generators`: one row per AI generator in `report_test` (generators the probes never trained on), with `n` and `catch_rate`, the share of its images scored at or above `t_ai`.
   - `real_sources`: one row per real-photo source, with `n` and `false_alarm_rate`, the share wrongly scored at or above `t_ai`. RAISE comes from `report_test`. Rows marked `"split": "val"` (COCO, Open Images, Open Images originals) come from the validation split: the probes never trained on them, but `t_ai` was set so that at most 5% of val real photos score above it, so these rows sit near 5% by design. They show how the sources differ, not how unseen photos fare. Val has no compressed copies cached, so `compressed` lists RAISE only.
+- `usage`: added by the server on every request, never stored in `scorecard.json`, so the numbers are always current. `checks_total` (all checks counted since launch), `checks_last_30_days` (today and the 29 days before, UTC), `feedback_answers` (how many feedback answers there are) and `feedback_right` (how many said "right"; `null` until there are at least 20 answers, so a handful of answers is never shown as a rate). `usage` is `null` if the usage file cannot be read.
 - `judge`: the Claude judge on `report_test` (from `data/eval/judge_cache_prod.jsonl`, the answers for the current production prompt): `n`, `accuracy` (decisive and right; `uncertain` counts as wrong), `uncertain_rate`, and `calibrated_ece` from `api/judge_calibration.json`. `null` if those files are missing.
+
+## Usage counts and feedback
+
+Code in `api/usage.py`. Everything lives in one SQLite file, `usage.sqlite` in the data dir (`SIXFINGERS_DATA_DIR`, default `data/`), next to `judge_budget.json`, so restarts and code updates keep it. It has three tables:
+
+- `daily_counts`: one row per (UTC date, input kind, verdict) with a running total `n`. Input kind is `file` or `link`. Every finished check calls `Usage.record_check(kind, verdict, probability, model_version, judge_used)` once, so other check routes (for example video or audio) only need that one call. A refused image (`422`) or an error is not counted.
+- `checks`: for 24 hours only, `check_id` with the UTC date, input kind, verdict, the probability shown (`probability_ai`), the model version and whether the judge answered (`judge_used`, 1 or 0). This is what lets feedback be tied to a verdict without keeping the image. Rows older than 24 hours are deleted each time a check is counted, and are refused for feedback even before that.
+- `feedback`: the answer, the optional `actual` label and comment, the `check_id` it answers (so it cannot be answered twice) and the verdict fields above.
+
+Never stored: IP addresses or IP hashes, browser or device details, images or image hashes, links, or anything else per person. A storage error never fails a check: it is logged and the check returns `check_id: null`.
+
+`POST /v1/feedback` takes a JSON body:
+
+| Field | Rule |
+|---|---|
+| `check_id` | Required. The `check_id` from a check response (a version 4 UUID in lower case). |
+| `answer` | Required. `right`, `wrong` or `unsure`. |
+| `actual` | Optional. What the image really was: `ai`, `real` or `unknown`. |
+| `comment` | Optional free text, at most 500 characters. Control characters are removed (line breaks are kept); a blank comment counts as none. |
+
+Any other field, a wrong value or a longer comment gives `422`. Answers: `200` `{"status": "ok"}`, `404` the `check_id` is unknown or older than 24 hours, `409` this check already has feedback, `429` more than 20 feedback posts from one IP in an hour (same in-memory hashed limiter as checks; the IP is never stored), `503` the feedback could not be saved.
+
+    curl -H 'Content-Type: application/json' -d '{"check_id": "<id>", "answer": "right"}' http://127.0.0.1:8000/v1/feedback
+
+To read the data, run `make feedback` (or `.venv/bin/python -m ml.eval.feedback_report`). It prints the daily totals and writes every feedback row to `data/feedback.csv` (git-ignored, like all of `data/`). Comments that start with `=`, `+`, `-` or `@` get a leading `'` so a spreadsheet does not run them as formulas.
 
 ## Model loading and hot reload
 
@@ -103,8 +131,8 @@ Images are downscaled to at most 1568 px on the long edge, re-encoded as JPEG, a
 | `SIXFINGERS_IP_SALT` | Optional fixed salt; random per start if unset. |
 | `SIXFINGERS_TRUST_PROXY` | Set to `1` behind Caddy so the real client IP is read from `X-Forwarded-For`. |
 | `SIXFINGERS_CORS_ORIGINS` | Comma-separated allowed origins. |
-| `SIXFINGERS_MODELS_DIR`, `SIXFINGERS_DATA_DIR` | Where models and the budget file live. |
+| `SIXFINGERS_MODELS_DIR`, `SIXFINGERS_DATA_DIR` | Where models live, and where the budget file and `usage.sqlite` (usage counts and feedback) live. |
 
 ## Tests
 
-`make test` runs `tests/api/`. A fake Anthropic client covers success, timeout, error, refusal (422) and budget cases, plus the image-only prompt, the computed override flag and detector/judge concurrency. `tests/api/test_boxes.py` covers box checks (clamping, dropping bad boxes, keeping the cue). `tests/api/test_scorecard.py` covers `GET /v1/scorecard` and builds a scorecard from a tiny fake manifest. A fake `models/vN` folder and a stub embedder cover the rest, including 413/415/429 and hot reload. `tests/api/test_fetch.py` covers links with mocked DNS and HTTP: blocked addresses, redirects, size cap, timeouts and the vetted-IP connection. No network, no real API calls.
+`make test` runs `tests/api/`. A fake Anthropic client covers success, timeout, error, refusal (422) and budget cases, plus the image-only prompt, the computed override flag and detector/judge concurrency. `tests/api/test_boxes.py` covers box checks (clamping, dropping bad boxes, keeping the cue). `tests/api/test_scorecard.py` covers `GET /v1/scorecard` and builds a scorecard from a tiny fake manifest. A fake `models/vN` folder and a stub embedder cover the rest, including 413/415/429 and hot reload. `tests/api/test_fetch.py` covers links with mocked DNS and HTTP: blocked addresses, redirects, size cap, timeouts and the vetted-IP connection. `tests/api/test_usage.py` covers the usage counter (one count per check, no IP stored), feedback (success, `404`, `409`, `422`, the comment cap, expiry), the scorecard `usage` block below and above 20 answers, the CSV report, and a check that still succeeds when the usage file cannot be written. No network, no real API calls.

@@ -14,7 +14,7 @@ def test_scorecard_endpoint(build, models_dir):
     assert c.get("/v1/scorecard").status_code == 404
     (models_dir / "v1" / "scorecard.json").write_text(json.dumps({"model_version": "v1"}))
     r = c.get("/v1/scorecard")
-    assert r.status_code == 200 and r.json() == {"model_version": "v1"}
+    assert r.status_code == 200 and r.json()["model_version"] == "v1" and "usage" in r.json()
 
 
 def test_build_scorecard(tmp_path, monkeypatch):

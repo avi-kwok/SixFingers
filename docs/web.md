@@ -19,9 +19,13 @@ The About page explains the two percentages in plain words.
 - **Uncertain.** An `uncertain` verdict adds a note ("We would rather say we don't know than guess") with the calibrated probability. Under the big number, "What this number means" links to `/scorecard#calibration`.
 - **Download report.** The button stamps the UTC time and calls `window.print()`. Print CSS (`@media print` in `globals.css`) hides everything except the result card, so the report is the card itself: verdict, probability, boxes over the preview, cues, provenance, detector score, model version and disclaimer. Choose "Save as PDF" in the print dialog. Nothing is uploaded or stored.
 
+## Feedback card
+
+Under each real result (not in mock mode, and not when the response has no `check_id`) a small card asks "Was this right?" with Right / Wrong / Not sure buttons. After a choice it offers "What was it really?" (AI-made / Real / Don't know), an optional comment box (500 characters, with a counter and a reminder not to type personal details) and Send, which posts to `POST /v1/feedback`. It then shows a thank-you line, or an error (result expired, already sent, too much feedback, server unreachable). The choices are ordinary buttons with `aria-pressed`, so they work with Tab, Enter and Space. The card is hidden when printing the report. A new result gets a fresh card.
+
 ## Scorecard page
 
-`/scorecard` is rendered on the server from `GET /v1/scorecard` (see `docs/api.md`, **Scorecard**). It shows the catch rate per generator, the false-alarm rate per real-photo source (clean and compressed), clean vs compressed overall, the Claude Haiku visual check's accuracy and uncertain rate, the calibration sentence (`#calibration`) and limits. If the endpoint fails or returns 404 it says the scorecard is unavailable. It is linked from the header and from the facts line on the home page. Mock mode uses `MOCK_SCORECARD` in `web/lib/api.ts`; `MOCK_RESULT` has two boxed cues and one whole-image cue.
+`/scorecard` is rendered on the server from `GET /v1/scorecard` (see `docs/api.md`, **Scorecard**). It shows the catch rate per generator, the false-alarm rate per real-photo source (clean and compressed), clean vs compressed overall, the Claude Haiku visual check's accuracy and uncertain rate, the calibration sentence (`#calibration`), a Usage block and limits. The Usage block shows checks since launch and in the last 30 days, and "X of Y answers said the result was right" once there are at least 20 feedback answers ("Not enough feedback yet" before that), with a note that this is not a measured accuracy. If the endpoint fails or returns 404 it says the scorecard is unavailable. It is linked from the header and from the facts line on the home page. Mock mode uses `MOCK_SCORECARD` in `web/lib/api.ts`; `MOCK_RESULT` has two boxed cues and one whole-image cue.
 
 ## Style
 

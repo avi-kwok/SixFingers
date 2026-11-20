@@ -91,8 +91,8 @@ second time because downloads and normalization are cached.
 - COCO and Open Images give web copies: photos that were resized, recompressed and often made small before they were shared.
 - Probes trained only on those learned that "real" looks like a web copy. On photos straight from a camera they went wrong: they flagged about one in five RAISE camera photos as AI.
 - The `openimages_original` source adds camera photos to train, val and gate, so the probes see camera output during training. The val split, which sets the thresholds, holds camera photos too.
-- The live model (v15) was trained on 130 of them: 94 in train, 19 in val, 17 in gate. The 2500 in the table below is the target, not the current count.
-- With them, RAISE photos wrongly flagged as AI went from 20.4% (v13) to 18.1%. See [results.md](results.md).
+- The live model (v16) was trained on 227 of them: 167 in train, 32 in val, 28 in gate. The 2500 in the table below is the target, not the current count.
+- With them, RAISE photos wrongly flagged as AI went from 20.4% (v13) to 18.1% (v15) to 6.7% (v16). See [results.md](results.md).
 
 ### Where the camera photos come from
 
@@ -198,7 +198,7 @@ for a smaller run). The whole run takes hours.
 |---|---|---|---|---|
 | COCO 2017 val | real | `real_coco` | 2500 | seeded sample; captions drive local generation |
 | Open Images validation | real | `real_openimages` | 2500 | CC BY 2.0 images |
-| Open Images originals | real | `real_oi_original` | 2500 | Flickr originals with a camera make in EXIF, CC BY 2.0; train/val/gate only; 130 so far (v15) |
+| Open Images originals | real | `real_oi_original` | 2500 | Flickr originals with a camera make in EXIF, CC BY 2.0; train/val/gate only; 273 downloaded so far, 227 used in v16 |
 | RAISE | real | `real_raise` | 300 | test only (report_test); NEF converted with macOS `sips` |
 | SDXL-Turbo (local) | AI | `sdxl_turbo` | 2500 | one image per COCO caption |
 | Rapidata | AI | `dalle3` | ~760 | from the Rapidata shard lists |

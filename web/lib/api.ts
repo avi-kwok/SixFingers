@@ -1,4 +1,4 @@
-import type { CheckResponse, Scorecard } from "./types";
+import type { CheckResponse, FeedbackBody, Scorecard } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 export const MOCK = process.env.NEXT_PUBLIC_MOCK === "1";
@@ -59,6 +59,7 @@ export const MOCK_SCORECARD: Scorecard = {
     },
   },
   judge: { model: "claude-haiku-5-5", split: "report_test", n: 300, accuracy: 0.97, uncertain_rate: 0.02, calibrated_ece: 0.03, calibration_method: "platt" },
+  usage: { checks_total: 0, checks_last_30_days: 0, feedback_answers: 0, feedback_right: null },
 };
 
 const STATUS: Record<number, [ApiError["kind"], string]> = {
@@ -105,6 +106,23 @@ export function checkImage(file: File | string, onProgress: (frac: number) => vo
     else form.append("image", file);
     xhr.send(form);
   });
+}
+
+const FEEDBACK_STATUS: Record<number, string> = {
+  404: "This result has expired, so feedback can no longer be sent.",
+  409: "Feedback for this result was already sent.",
+  429: "Too much feedback from your connection. Try again later.",
+};
+
+// Throws an Error whose message is ready to show.
+export async function sendFeedback(body: FeedbackBody): Promise<void> {
+  let r: Response;
+  try {
+    r = await fetch(`${API_URL}/v1/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  } catch {
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  }
+  if (!r.ok) throw new Error(FEEDBACK_STATUS[r.status] ?? "Feedback could not be sent. Try again later.");
 }
 
 export async function getModel(): Promise<unknown> {

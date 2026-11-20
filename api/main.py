@@ -1,4 +1,4 @@
-"""FastAPI app: POST /v1/check, GET /v1/model, GET /v1/scorecard, GET /v1/health."""
+"""FastAPI app: POST /v1/check, POST /v1/feedback, GET /v1/model, GET /v1/scorecard, GET /v1/health."""
 import json
 import logging
 import os
@@ -22,9 +22,10 @@ from api.fetch import fetch_image
 from api.judge import MODEL, Budget, Judge, JudgeUnavailable
 from api.limits import RateLimiter
 from api.provenance import read_provenance
+from api.usage import Usage
 from api.validate import MAX_BYTES, UploadError, validate_upload
 from ml.common import judge_backend, paths
-from ml.common.api_models import CheckResponse, JudgeResult, Timings
+from ml.common.api_models import CheckResponse, FeedbackIn, JudgeResult, Timings
 
 log = logging.getLogger("sixfingers")
 PROD_ORIGIN = "https://sixfingers.avikwok.dev"
@@ -70,7 +71,7 @@ def _make_client():
 
 def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None = None,
                budget_path: Path | None = None, budget_limit: int | None = None,
-               rate_limit: int = 10) -> FastAPI:
+               rate_limit: int = 10, usage_path: Path | None = None) -> FastAPI:
     _setup_logging()
     store = DetectorStore(embedder or FeatureEmbedder(), models_dir)
 
@@ -101,7 +102,9 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
     # decoding and embedding a large image costs hundreds of MB, so only a few run at once
     heavy = threading.BoundedSemaphore(int(os.environ.get("SIXFINGERS_MAX_CONCURRENT", 2)))
     pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="judge")
-    app.state.store, app.state.judge, app.state.limiter = store, judge, limiter
+    usage = Usage(usage_path or paths.data_dir() / "usage.sqlite")
+    feedback_limiter = RateLimiter(20)  # feedback posts per IP per hour; like checks, only a rotating hash is kept in memory
+    app.state.store, app.state.judge, app.state.limiter, app.state.usage = store, judge, limiter, usage
 
     def client_ip(req: Request) -> str:
         # behind Caddy the last X-Forwarded-For entry is the one the proxy added
@@ -180,11 +183,28 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
         log.info("check", extra={"event": "check", "verdict": verdict, "source": source, "score": round(det.score, 4),
                                  "dims": [checked.width, checked.height], "format": checked.format,
                                  "latency_ms": total, "model_version": version, "ip_hash": ip_hash, "reason": reason, **src})
+        check_id = usage.record_check(src["input"], verdict, prob, version, source == "judge")
         return CheckResponse(
             verdict=verdict, source=source, probability_ai=prob, judge=jres, judge_unavailable_reason=reason, detector=det,
-            provenance=prov, model_version=version, disclaimer=DISCLAIMER,
+            provenance=prov, model_version=version, disclaimer=DISCLAIMER, check_id=check_id,
             timings_ms=Timings(validate=int((t1 - t0) * 1000), provenance=int((t2 - t1) * 1000),
                                detector=int((t3 - t2) * 1000), judge=int((t4 - t3) * 1000), total=total))
+
+    @app.post("/v1/feedback")
+    def feedback(request: Request, body: FeedbackIn):
+        wait = feedback_limiter.allow(feedback_limiter.ip_hash(client_ip(request)))
+        if wait:
+            raise HTTPException(429, "Too much feedback. Try again later.", headers={"Retry-After": str(wait)})
+        try:
+            status = usage.add_feedback(body.check_id, body.answer, body.actual, body.comment)
+        except Exception:
+            log.exception("feedback write failed")
+            raise HTTPException(503, "Feedback could not be saved. Try again later.") from None
+        if status == "unknown":
+            raise HTTPException(404, "This result has expired or does not exist.")
+        if status == "duplicate":
+            raise HTTPException(409, "Feedback for this result was already sent.")
+        return {"status": "ok"}
 
     @app.get("/v1/model")
     def model():
@@ -198,9 +218,10 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
     @app.get("/v1/scorecard")
     def scorecard():
         try:  # written offline by ml/eval/scorecard.py next to the model it describes
-            return json.loads((store.link / "scorecard.json").read_text())
+            card = json.loads((store.link / "scorecard.json").read_text())
         except (FileNotFoundError, NotADirectoryError):
             raise HTTPException(404, "No scorecard for the current model.") from None
+        return {**card, "usage": usage.summary()}  # read live on every request, never stored in the file
 
     @app.get("/v1/health")
     def health():
