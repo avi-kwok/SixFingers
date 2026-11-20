@@ -286,6 +286,57 @@ The API can run this model, as a prototype that is off by default. Start it with
 
 - The model comes from `models/audio/a3/` (`probe.json` and `meta.json`); `SIXFINGERS_AUDIO_MODEL` picks another folder (for example `a2`).
 - The input is prepared the same way as in training (`ml.audio.features`: 16 kHz mono, silence trimmed at -40 dB, first 4 s), so the scores mean the same thing as in the tables above.
+- Before the score is used, a speech gate checks that those 4 s sound like speech (section 8). If they do not, there is no band, only the note "No clear speech found, so the voice was not checked." (`POST /v1/check-audio` answers `422` with that text; a video result gets `audio: {analysed: false, note: ...}`).
 - The answer is `p_fake` and a band: `likely_ai` at or above the threshold in `meta.json` (0.079 for a3), `likely_real` below it.
-- Every limit in section 6 applies. In short: only the first 4 seconds count, and the model learned from read English speech.
+- Every limit in section 6 applies. In short: only the first 4 seconds count, and the model learned from read English speech. Clips with no clear speech get no voice verdict (section 8).
 - Claude cannot hear audio, so there is no written explanation, only the score.
+
+## 8. Speech gate: only check a voice when there is speech
+
+**The problem.** The probe was trained on speech only. Give it music or street noise and it still answers, and the answer means nothing. We measured it (below): without a gate, **54.9%** of 390 real music and ambient clips were called `likely_ai`. In a video, one such flag makes the whole video `likely_ai` (see [video.md](video.md)), so a real video with only a music track could be flagged.
+
+**The fix.** A second small probe, the gate, reads the same XLS-R embedding (layer 6, the same 4 s) that the voice probe reads, so it costs no extra model run. It answers "is this speech?". Below its threshold, the API returns no voice band and the video's overall verdict uses the picture only. The gate lives in `models/audio/<model>/gate.json`; if that file is missing the API logs a warning and scores everything, as before.
+
+**How its settings were chosen** (all on data that is not used for the numbers below):
+
+| | Clips | Where from |
+|---|---|---|
+| Speech examples | 5,500 (70% fitted, 30% held out) | the training sets only: `la_train`, `asv5_train_aug`, `codecfake_aug` (real and fake speech both count as speech) |
+| Non-speech examples | 1,600 (70% fitted, 30% held out) | FSD50K **dev** clips (CC BY 4.0 as a set; each clip has its own Creative Commons licence): 800 music, 800 other sounds. Clips labelled speech, singing, laughter or other human voice sounds were left out. |
+
+It is a logistic probe (`C` = 0.1). The threshold rule: let at most 1% of the held-out non-speech clips through. On those held-out tuning clips that let through 1.0% of non-speech and gated out 0.06% of speech. Honest history: the first rule tried was "gate out 1% of held-out speech". After seeing the validation and In-the-Wild gating rates for it (20% of ASVspoof 5 dev fakes and 24% of real In-the-Wild clips gated out, far too strict) we switched to the rule above. That is one revision made while looking at those validation numbers, so they are slightly optimistic; the rule was fixed before the gate was ever run on the non-speech test clips.
+
+**Measured with the gate on.** Non-speech test set (390 clips, never used for tuning, scored by the live `AudioScorer`, a3): FSD50K **eval** clips (100 music, 40 music with singing, 100 other sounds) and 150 ESC-50 clips (30 from each of 5 groups; ESC-50 is CC BY-NC 3.0, fine for this non-commercial project). The `likely_ai` column counts clips that still get a voice verdict of `likely_ai`.
+
+| Group | Clips | `likely_ai` without gate | Still get any voice verdict | Still `likely_ai` |
+|---|---|---|---|---|
+| FSD50K music | 100 | 39% | 4% | 4% |
+| FSD50K music with singing | 40 | 25% | 2.5% | 0% |
+| FSD50K other sounds | 100 | 68% | 1% | 1% |
+| ESC-50 animals | 30 | 63% | 3.3% | 0% |
+| ESC-50 nature, water, wind | 30 | 63% | 3.3% | 3.3% |
+| ESC-50 human non-speech (cough, laugh, cry...) | 30 | 80% | 10% | 10% |
+| ESC-50 indoor sounds | 30 | 77% | 0% | 0% |
+| ESC-50 city sounds | 30 | 40% | 0% | 0% |
+| **All 390** | 390 | **54.9%** (214 clips) | **2.8%** (11 clips) | **2.3%** (9 clips) |
+
+With 390 clips, a share has an uncertainty of roughly 1 to 2 points. Human sounds that are not speech (coughs, laughs, a crying baby) are the weak spot: 3 of 30 still got a verdict.
+
+**Real and fake speech wrongly gated out** (so they get no voice verdict). Computed from the cached embeddings of the existing audio validation sets, which are the same crops the live scorer uses (stored as float16):
+
+| Set | Real speech | Fake speech |
+|---|---|---|
+| LA dev | 1 of 2,548 (0.04%) | 0 of 5,000 (0%) |
+| ASVspoof 5 dev | 0 of 3,000 (0%) | 53 of 3,000 (1.8%) |
+| ASVspoof 5 dev, damaged copies | 0 of 3,000 (0%) | 39 of 3,000 (1.3%) |
+| In-the-Wild (report only, never used for any choice) | 98 of 5,000 (2.0%) | 30 of 5,000 (0.6%) |
+
+Gated-out fakes are fakes that go unchecked, not wrongly flagged real clips. The validation sets also helped choose the voice probe (a3), not the gate.
+
+**Speech with music underneath.** We mixed 60 real and 60 fake clean LA dev clips with FSD50K eval music: at 10 dB (speech clearly louder) 18% of the real and 12% of the fake mixes were gated out; at 0 dB (music as loud as the voice) 50% and 30%. So a voice over loud music often gets no voice check. That is the safe direction (no false flag), but it means a fake voice over loud music is missed.
+
+**Limits of the gate.**
+- It judges the first 4 s after silence trimming, like the voice probe. A video that opens with a music intro and speaks later gets no voice check.
+- The speech examples are studio and crowdsourced read English plus damaged copies. The gate has not seen conversations or other languages as speech examples, and the real-world check is In-the-Wild only (2.0% of real speech gated out there).
+- Singing is mostly treated as not speech (39 of 40 singing clips gated out).
+- The test set is small (390 clips, 11 let through); do not read the percentages to the decimal.

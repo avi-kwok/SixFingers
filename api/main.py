@@ -383,6 +383,8 @@ def create_app(embedder=None, anthropic_client="auto", models_dir: Path | None =
                     raise HTTPException(503, "Audio model is not available.") from None
             finally:
                 heavy.release()
+            if not isinstance(res, AudioResult):  # the speech gate: no voice verdict for music or noise
+                raise HTTPException(422, res.note)
             t2 = time.perf_counter()
             duration = round(len(samples) / aud.features.SR, 3)
             total = int((t2 - t0) * 1000)

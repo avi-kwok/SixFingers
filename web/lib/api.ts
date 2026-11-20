@@ -153,6 +153,7 @@ const AUDIO_STATUS: Record<number, [ApiError["kind"], string]> = {
   404: ["other", "Audio checks are not turned on for this server."],
   413: ["big", "That audio is too large or too long. The limits are 25 MB and 60 seconds."],
   415: ["type", "Unsupported file type. Use WAV, MP3, FLAC, OGG, M4A or WebM."],
+  422: ["other", "No clear speech found, so the voice was not checked."],
   429: ["rate", "Too many checks. The limit is 10 per hour. Try again later."],
   503: ["other", "Audio checks are not available right now."],
 };

@@ -51,7 +51,7 @@ The response:
 | `judge` | `null` when the judge did not answer. Otherwise `model`, `confidence`, `explanation`, `overrode_detector`, and `cues`: a list of `{frame, time_s, region, cue}`. `frame` is 1 to 20, and `time_s` is looked up by the server from that frame. |
 | `judge_unavailable_reason` | `budget`, `timeout`, `error`, `refusal`, `disabled` or `verification` when the judge did not answer; otherwise `null`. |
 | `detector` | `score` (the mean of the top 4 frame scores), `band`, `thresholds` (`t_ai`, `t_real`), and `frames`: a list of `{index, time_s, score, band}` in time order. `index` is 1 to 20, as labelled in the grid. |
-| `audio` | With audio checks off: `{analysed: false, note: "Audio is not analysed yet."}`. With them on: the audio score of the soundtrack (same fields as `audio` in **Audio checks** below), or `analysed: false` with a note saying the video has no audio track or that the track could not be read. |
+| `audio` | With audio checks off: `{analysed: false, note: "Audio is not analysed yet."}`. With them on: the audio score of the soundtrack (same fields as `audio` in **Audio checks** below), or `analysed: false` with a note saying the video has no audio track, that the track could not be read, or that no clear speech was found. |
 | `duration_s`, `model_version` | Video length in seconds and the detector model version. |
 | `timings_ms` | `validate`, `frames`, `detector`, `judge` and `total`, in milliseconds. |
 | `disclaimer` | The estimate-not-proof note for videos. |
@@ -82,6 +82,7 @@ What happens to one audio file (`api/audio.py`):
 1. **Validate**. The upload is saved to a temporary folder that is deleted afterwards. Its first bytes must look like WAV, MP3, FLAC, OGG, M4A or WebM (file names lie). Over 25 MB gives `413`, an empty upload `400`, anything else `415`.
 2. **Decode**. `ffmpeg` turns the file into 16 kHz mono samples, with the same safety rules as video: the format is forced from the sniffed bytes, only local files may be opened, and there is a 30 second time limit. Longer than 60 seconds gives `413`, an unreadable file `400`.
 3. **Score**. Silence at the start and end is trimmed and the first 4 seconds are kept, exactly as in training. The speech model (XLS-R, about 1.2 GB) turns them into an embedding, and a small probe turns that into `p_fake`, the chance that the voice is AI-generated. The speech model loads on the first audio check, so that one is slower.
+3b. **Speech gate**. A second small probe reads the same embedding and checks that the 4 seconds sound like speech. If not, there is no score and no band: `POST /v1/check-audio` answers `422` with "No clear speech found, so the voice was not checked.", and a video's `audio` is `{analysed: false, note: <that text>}`, so `overall_verdict` uses the picture only. The gate file is `models/audio/<model>/gate.json` (see [audio.md](audio.md) section 8); without it every clip is scored.
 4. **Band**. `p_fake` at or above the model's threshold (from its `meta.json`) is `likely_ai`; below it, `likely_real`. There is no `uncertain` band yet.
 
 There is no judge step: Claude cannot hear audio, so `source` is always `detector_only` and the note says so.
@@ -98,7 +99,7 @@ The response:
 | `timings_ms` | `validate`, `detector` and `total`, in milliseconds. |
 | `disclaimer` | The estimate-not-proof note for audio. |
 
-Errors: `400` missing `audio` field, empty upload or unreadable audio. `413` over 25 MB or over 60 seconds. `415` not one of the supported formats. `429` too many checks (an audio file counts as one). `503` when the audio model or `ffmpeg` is not available.
+Errors: `400` missing `audio` field, empty upload or unreadable audio. `413` over 25 MB or over 60 seconds. `415` not one of the supported formats. `422` no clear speech found in the audio (speech gate). `429` too many checks (an audio file counts as one). `503` when the audio model or `ffmpeg` is not available.
 
 Videos: with audio checks on, `POST /v1/check-video` also decodes the soundtrack (while the frames are being sampled) and scores it with the same model (while the frames are being scored). `verdict` still comes from the frames only; the audio score is shown next to it, and `overall_verdict` combines the two (see above).
 
@@ -219,4 +220,4 @@ A video request sends the same six keys, once per video. `image` is the composed
 
 Video tests: `tests/api/test_video_ffmpeg.py` and `tests/api/test_video_api.py`. Clips are made with ffmpeg `testsrc` during the test, the judge and the detector are mocked, and the tests are skipped when ffmpeg is not installed. The playlist test checks that an HLS or concat file pointing at `http://` is refused without any connection.
 
-Audio tests: `tests/api/test_audio_api.py`. Tones are made with ffmpeg in every supported format, and a fake embedder stands in for XLS-R, so no test needs the GPU. They check that the route does not exist with the flag off, the caps (`400`, `413`, `415`), videos with and without a soundtrack, and that the speech model loads only once.
+Audio tests: `tests/api/test_audio_api.py`. Tones are made with ffmpeg in every supported format, and a fake embedder stands in for XLS-R, so no test needs the GPU. They check that the route does not exist with the flag off, the caps (`400`, `413`, `415`), videos with and without a soundtrack, that the speech model loads only once, and the speech gate (a fake gate probe: speech-like audio passes, other audio gets `422` or a video note and a picture-only overall verdict, and no `gate.json` means no gating).

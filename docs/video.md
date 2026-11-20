@@ -95,18 +95,18 @@ Claude judges what it can see in still frames. It cannot see motion between fram
 
 - **Real training data.** AI-generated and real videos from AIGVDBench, used to train and test a video probe (next section).
 - **Temporal features.** Four motion numbers inside that probe: how much the picture changes from frame to frame. The probe did not beat the frame rule, so videos are still scored with the frame rule.
-- **Audio.** A voice-deepfake probe on XLS-R speech embeddings scores the soundtrack when audio checks are switched on (see [audio.md](audio.md)). Its result is reported next to the picture verdict and also feeds the overall verdict (next section).
+- **Audio.** A voice-deepfake probe on XLS-R speech embeddings scores the soundtrack when audio checks are switched on and the soundtrack has clear speech (see [audio.md](audio.md)). Music or noise alone gets no voice result. Its result is reported next to the picture verdict and also feeds the overall verdict (next section).
 
 ## Overall verdict
 
-A video result shows three things: the picture verdict (from the frames), the voice result (only when audio checks are on and the video has a soundtrack), and an overall verdict. The overall rule is simple and is not trained:
+A video result shows three things: the picture verdict (from the frames), the voice result (only when audio checks are on and the video has a soundtrack with clear speech; music or noise alone gets the note "No clear speech found, so the voice was not checked." and no band), and an overall verdict. The overall rule is simple and is not trained:
 
 - If the picture or the voice says "likely AI", the overall verdict is "likely AI". The page says which part flagged it.
 - If the picture says "likely real" and the voice (when there is one) says "likely real", the overall verdict is "likely real".
 - Anything else is "uncertain".
-- With no voice result, the overall verdict is the picture verdict.
+- With no voice result (audio checks off, no soundtrack, no clear speech, or an unreadable track), the overall verdict is the picture verdict.
 
-Flagging on either part raises false alarms, because a real video only has to fool the rule once. The picture verdict shown is the judge's when it answers. On 150 real test videos the judge wrongly flagged 1.3% (2 videos); see "How often the video verdict is right" below. When the judge is unavailable, the detector is used instead, and it wrongly flagged 5.3% of real test videos. The voice check wrongly flagged 3.3% of real speech on In-the-Wild. So with the judge, roughly 1 to 5% of real videos can be flagged overall, and up to about 9% when only the detector is available. The voice check is a prototype (see [audio.md](audio.md)). The combined rule itself has not been measured on videos with real soundtracks. In the API the fields are `overall_verdict` and `overall_flagged_by`.
+Flagging on either part raises false alarms, because a real video only has to fool the rule once. The picture verdict shown is the judge's when it answers. On 150 real test videos the judge wrongly flagged 1.3% (2 videos); see "How often the video verdict is right" below. When the judge is unavailable, the detector is used instead, and it wrongly flagged 5.3% of real test videos. The voice check wrongly flagged 3.3% of real speech on In-the-Wild. Before the speech gate, it also called 54.9% of 390 real music and ambient clips `likely_ai`; with the gate, 2.3% (see [audio.md](audio.md) section 8). So with the judge, roughly 1 to 5% of real videos can be flagged overall, and up to about 9% when only the detector is available. The voice check is a prototype (see [audio.md](audio.md)). The combined rule itself has not been measured on videos with real soundtracks. In the API the fields are `overall_verdict` and `overall_flagged_by`.
 
 ## How often the video verdict is right
 

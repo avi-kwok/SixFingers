@@ -53,6 +53,8 @@ V=$(readlink models/current)   # e.g. v16
 rsync -a "models/$V" ubuntu@<vm-ip>:~/SixFingers/models/
 ssh ubuntu@<vm-ip> "cd ~/SixFingers/models && ln -sfn $V current && sudo systemctl restart sixfingers-api"
 ```
+If you turn on audio checks (`SIXFINGERS_ENABLE_AUDIO=1`), copy the audio probe too: `rsync -a models/audio ubuntu@<vm-ip>:~/SixFingers/models/`. The XLS-R model it uses (about 1.2 GB) downloads on the first audio check, so the first one is slow.
+
 `api/judge_calibration.json` is in git, so it arrives with the clone. If you changed it and have not pushed, copy it too: `rsync -a api/judge_calibration.json ubuntu@<vm-ip>:~/SixFingers/api/`.
 
 `sixfingers doctor` prints the version the API is serving next to `models/current` and warns if they differ.

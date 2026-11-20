@@ -5,6 +5,7 @@ Like the video route, ffmpeg only reads a local file the API wrote into its own 
 demuxer forced from the sniffed bytes and only the file and pipe protocols allowed.
 """
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -16,14 +17,18 @@ from api import video as vid
 from api.validate import UploadError
 from ml.audio import features
 from ml.common import paths
-from ml.common.api_models import AudioResult
-from ml.common.schemas import load_probe, probe_logit, sigmoid
+from ml.common.api_models import AudioInfo, AudioResult
+from ml.common.schemas import ProbeArtifact, load_probe, probe_logit, sigmoid
 
+log = logging.getLogger("sixfingers")
 MAX_BYTES = 25 * 1024 * 1024
 MAX_SECONDS = 60
 UNREADABLE = "Could not read this audio."
 NOTE = ("Prototype. Only the first 4 seconds of speech are scored, by a model trained mostly on read English "
         "speech. There is no written explanation for audio: Claude, the explainer, cannot hear audio.")
+
+
+NO_SPEECH = "No clear speech found, so the voice was not checked."
 
 
 def enabled() -> bool:
@@ -84,15 +89,27 @@ class AudioScorer:
         self.layer = int(meta["layer"])
         self.threshold = float(meta["threshold_p_fake"])
         self.version = meta.get("version", name)
+        # speech gate (models/audio/<name>/gate.json, see docs/audio.md); without the file every clip is scored, as before
+        self.gate, self.gate_layer, self.gate_threshold = None, self.layer, 0.0
+        if (d / "gate.json").exists():
+            g = json.loads((d / "gate.json").read_text())
+            self.gate, self.gate_layer, self.gate_threshold = ProbeArtifact(**g["probe"]), int(g["layer"]), float(g["threshold_logit"])
+        else:
+            log.warning("no speech gate for audio model %s: music and noise will get a voice verdict", name)
         self._emb, self._lock = embedder, threading.Lock()
 
-    def score(self, samples: np.ndarray) -> AudioResult:
+    def score(self, samples: np.ndarray) -> AudioResult | AudioInfo:
+        """A voice verdict, or an AudioInfo note (no band) when the scored 4 s does not sound like speech."""
         # same input as training (ml.audio.features.load_clip): first 30 s decoded, silence trimmed, first 4 s
         clip = features.crop(features.trim_silence(samples[: int(features.MAX_READ_S * features.SR)]))
         with self._lock:  # loads XLS-R once, and keeps to one embedding at a time on the GPU
             if self._emb is None:
-                self._emb = features.XLSR(layers=(self.layer,))
-            emb = self._emb.embed(clip[None])[self.layer]
+                self._emb = features.XLSR(layers=tuple({self.layer, self.gate_layer}))
+            embs = self._emb.embed(clip[None])
+        # the gate reads the same crop and the same XLS-R pass as the probe, so it costs no extra model run
+        if self.gate is not None and probe_logit(self.gate, embs[self.gate_layer])[0] < self.gate_threshold:
+            return AudioInfo(note=NO_SPEECH)
+        emb = embs[self.layer]
         p = float(sigmoid(probe_logit(self.probe, emb) / self.probe.temperature)[0])
         return AudioResult(p_fake=p, band="likely_ai" if p >= self.threshold else "likely_real",
                            threshold=self.threshold, model_version=self.version, note=NOTE)

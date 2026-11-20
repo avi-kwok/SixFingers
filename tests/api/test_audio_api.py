@@ -181,4 +181,54 @@ def test_xlsr_loads_once_on_first_use(tmp_path, monkeypatch):
         t.start()
     for t in threads:
         t.join()
-    assert made == [(LAYER,)]
+    assert [sorted(m) for m in made] == [[LAYER]]
+
+
+# --- speech gate: no voice verdict unless the scored 4 s sounds like speech ---
+
+def add_gate(models_dir, threshold=0.0, name="a3"):
+    """Fake gate on the same fake feature: loud clips count as speech, quiet ones do not."""
+    probe = ProbeArtifact(backbone=f"xlsr300m_L{LAYER}", embed_dim=D, mean=[0.0] * D, std=[1.0] * D,
+                          weights=[1.0, 0, 0, 0], bias=0.0)
+    (models_dir / "audio" / name / "gate.json").write_text(
+        json.dumps({"probe": probe.model_dump(), "layer": LAYER, "threshold_logit": threshold}))
+
+
+@pytest.fixture
+def gated(tmp_path, models_dir, audio_on):
+    make_audio_model(models_dir)
+    add_gate(models_dir)
+    return TestClient(create_app(embedder=StubEmbedder(), anthropic_client=None, models_dir=models_dir,
+                                 budget_path=tmp_path / "budget.json", audio_embedder=FakeAudioEmbedder()))
+
+
+def test_gate_passes_speech_like_and_blocks_other_audio(gated, tmp_path):
+    ok = post_audio(gated, tone(tmp_path / "loud.wav", volume=4.0).read_bytes())
+    assert ok.status_code == 200 and ok.json()["audio"]["analysed"] is True
+    no = post_audio(gated, tone(tmp_path / "quiet.wav", volume=0.05).read_bytes())
+    assert no.status_code == 422 and no.json()["detail"] == aud.NO_SPEECH
+
+
+def test_gate_off_scores_everything_as_before(client, tmp_path):  # no gate.json in the model folder
+    r = post_audio(client, tone(tmp_path / "quiet.wav", volume=0.05).read_bytes())
+    assert r.status_code == 200 and r.json()["verdict"] == "likely_real"
+
+
+def test_video_without_speech_gets_a_note_and_the_picture_decides(gated, tmp_path):
+    j = post_video(gated, video_with_audio(tmp_path / "v.mp4").read_bytes()).json()  # a sine is loud: counts as speech here
+    assert j["audio"]["analysed"] is True
+    quiet = tmp_path / "q.mp4"
+    subprocess.run([FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-af", "volume=0.05",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(quiet)], check=True)
+    q = post_video(gated, quiet.read_bytes()).json()
+    assert q["audio"] == {"analysed": False, "note": aud.NO_SPEECH}
+    assert q["overall_verdict"] == q["verdict"] and "voice" not in q["overall_flagged_by"]
+
+
+def test_gate_decision_uses_the_threshold(tmp_path):
+    make_audio_model(tmp_path)
+    add_gate(tmp_path, threshold=100.0)  # nothing reaches it
+    s = aud.AudioScorer(tmp_path, FakeAudioEmbedder())
+    assert s.score(np.full(16_000, 0.3, dtype=np.float32)) == aud.AudioInfo(note=aud.NO_SPEECH)
