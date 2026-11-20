@@ -138,3 +138,24 @@ def test_feature_embedder_loads_once_and_normalizes_once(monkeypatch):
     assert norms == [1]  # both backbones reuse one normalized copy
     e.embed("clip_vitl14", Image.new("RGB", (600, 600)))
     assert norms == [1, 1]
+
+
+def test_not_ready_until_video_embedder_loaded(models_dir):
+    from api.detector import DetectorStore
+
+    class Lazy(StubEmbedder):
+        def __init__(self):
+            self.done = set()
+
+        def load(self, backbone):
+            self.done.add(backbone)
+
+        def loaded(self, backbone):
+            return backbone in self.done
+    img, vid = Lazy(), Lazy()
+    store = DetectorStore(img, models_dir, video_embedder=vid)
+    for b in store.get().meta.backbones:
+        img.load(b)
+    assert not store.ready()  # image side loaded, video side not
+    store.warm()
+    assert store.ready() and vid.done

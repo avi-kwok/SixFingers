@@ -26,6 +26,8 @@ Full numbers: [results.md](results.md).
 | `ml/data/` | Source registry (`sources.yaml`), download, normalize, manifest, splits, shortcut audit. |
 | `ml/features/` | Backbones (`embed(images) -> np.ndarray`) and the resumable feature cache. |
 | `ml/probes/` | Train probes, calibrate, set thresholds, write `models/vN/`. |
+| `ml/video/` | Video probe: trains on frame embeddings from sampled video frames (`models/video/`). See [video.md](video.md). |
+| `ml/audio/` | Audio deepfake probe: XLS-R embeddings plus a logistic probe (`models/audio/`). See [audio.md](audio.md). |
 | `ml/eval/` | Metrics and `docs/results.md`. |
 | `ml/judge_eval/` | Budget-capped comparison of judge models. |
 | `ml/loop/` | Nightly fetch, retrain, gate, promote. |
@@ -54,7 +56,9 @@ All in `ml/common/`.
 - `ProbeArtifact` JSON: backbone, kind (`logistic` or `mlp`), embed_dim, mean, std, weights, bias, temperature, optional MLP weights. Score: standardize, linear, divide logit by temperature, sigmoid.
 - `ModelMeta` (`models/vN/meta.json`): version, backbones, preprocess_version, thresholds `{t_ai, t_real}`, metrics, manifest hash, created_at.
 - Helpers: `save_probe/load_probe`, `save_meta/load_meta`, `probe_logit`, `calibrated_logit`, `ensemble_score` (mean of calibrated logits, then sigmoid), `band_for(score, thresholds)`, `atomic_symlink(target, link)`.
-- Model dir layout: `models/vN/{<backbone>.json, meta.json}`; `models/current -> vN`.
+- Model dir layout: `models/vN/{<backbone>.json, meta.json}`; `models/current -> vN`. Video and audio probes live apart in `models/video/<name>/` and `models/audio/<name>/`, each with `probe.json` and `meta.json`.
+
+Video and audio checks are explained in [video.md](video.md) and [audio.md](audio.md).
 
 **api_models.py**: `CheckResponse` (the `POST /v1/check` body), `JudgeOutput` (what Claude returns), `DetectorResult`, `Provenance`, `Timings` (field `validate` is aliased; dump with `by_alias=True`).
 

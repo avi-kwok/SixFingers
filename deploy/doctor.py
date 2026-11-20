@@ -111,6 +111,8 @@ def main():
     elif loop_on:
         check("last nightly loop", "WARN", "no report yet")
 
+    missing = [b for b in ("ffmpeg", "ffprobe") if not shutil.which(b)]
+    check("ffmpeg/ffprobe", "FAIL" if missing else "OK", f"missing on PATH: {', '.join(missing)} (video checks off)" if missing else "on PATH")
     try:
         tz = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"], capture_output=True, text=True, timeout=5).stdout.strip()
         check("timezone", "OK" if tz in ("UTC", "Etc/UTC") else "WARN", tz if tz in ("UTC", "Etc/UTC") else f"{tz or 'unknown'} (the loop cron time 0 9 * * * assumes UTC)")

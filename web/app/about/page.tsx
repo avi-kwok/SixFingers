@@ -21,6 +21,10 @@ export default async function About() {
   return (
     <>
       <h1>How it works</h1>
+      <h2>How a video is checked</h2>
+      <p>A video gets two checks and one overall verdict. <strong>Picture:</strong> we pull frames from the video, the detector scores each one, and a visual judge (Claude Haiku 5.5) reads them and cites the frames that gave it away. <strong>Voice:</strong> when the voice check is on, a prototype deepfake detector scores the soundtrack, using only the first 4 seconds of speech. A video with no soundtrack has no voice result.</p>
+      <p>The overall verdict is a simple rule: if the picture or the voice says likely AI, the overall verdict is likely AI and we say which part flagged it. If both say likely real, it is likely real. Anything else is uncertain. Flagging on either part raises false alarms, and the voice check is a prototype, so results can be wrong.</p>
+      <p>The rest of this page describes the image check.</p>
       <h2>1. Checks the file&apos;s paper trail</h2>
       <p>Some generators sign their images (C2PA) or write tags in the metadata. If found, we show it. Missing metadata means nothing, since it is easily stripped.</p>
       <h2>2. A statistical detector</h2>
@@ -41,6 +45,7 @@ export default async function About() {
       <h2>Limits</h2>
       <ul>
         <li>Only fully AI-generated still images. Edited, inpainted or upscaled images are out of scope.</li>
+        <li>Videos: up to 60 seconds and 100 MB, and a video counts as 3 checks. The picture check looks at up to 20 still frames, not at motion. The voice check is a prototype and scores only the first 4 seconds of speech.</li>
         <li>It gives a probability-style judgment, not proof. New generators can fool it.</li>
         <li>Heavy compression and resizing lower accuracy.</li>
       </ul>

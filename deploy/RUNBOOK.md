@@ -28,7 +28,7 @@ git clone https://github.com/avi-kwok/SixFingers.git ~/SixFingers
 ```bash
 cd ~/SixFingers && bash deploy/setup.sh
 ```
-It is safe to run again any time. It installs packages, builds the Python venv, downloads the three backbone weights, installs the `sixfingers-api` service, Caddy, the firewall rules and the `sixfingers` command. It takes a while on the first run.
+It is safe to run again any time. It installs packages (including ffmpeg, which video checks need), builds the Python venv, downloads the three backbone weights, installs the `sixfingers-api` service, Caddy, the firewall rules, and the `sixfingers` command. It takes a while on the first run.
 
 It also writes `SIXFINGERS_TRUST_PROXY=1` to `.env`. That tells the API to read the visitor's IP from the `X-Forwarded-For` header Caddy adds, so each visitor gets their own rate limit. (uvicorn already trusts that header from 127.0.0.1; the setting makes the app's own rule explicit.) It is only safe because Caddy is the only way in: the API listens on `127.0.0.1:8000`, which the internet cannot reach.
 
@@ -40,6 +40,7 @@ The prompts below do not echo what you type, and nothing lands in shell history.
 cd ~/SixFingers
 read -rs -p "Anthropic API key: " K; echo; printf 'ANTHROPIC_API_KEY=%s\n' "$K" >> .env; unset K
 read -rs -p "Discord webhook URL: " W; echo; printf 'DISCORD_WEBHOOK_URL=%s\n' "$W" >> .env; unset W
+read -rs -p "Turnstile secret key (optional, from the Cloudflare dashboard): " T; echo; printf 'SIXFINGERS_TURNSTILE_SECRET=%s\n' "$T" >> .env; unset T
 chmod 600 .env
 sudo systemctl restart sixfingers-api
 ```
@@ -48,7 +49,7 @@ Run each block once. If you mistype, edit `.env` with `nano .env` (do not `cat` 
 ## 7. Load a model
 The API serves whatever `models/current` points to. Copy the model your Mac uses now (run from `~/SixFingers` on your Mac):
 ```bash
-V=$(readlink models/current)   # e.g. v15
+V=$(readlink models/current)   # e.g. v16
 rsync -a "models/$V" ubuntu@<vm-ip>:~/SixFingers/models/
 ssh ubuntu@<vm-ip> "cd ~/SixFingers/models && ln -sfn $V current && sudo systemctl restart sixfingers-api"
 ```
@@ -59,7 +60,7 @@ ssh ubuntu@<vm-ip> "cd ~/SixFingers/models && ln -sfn $V current && sudo systemc
 ## 8. Vercel project (manual step)
 1. vercel.com, Add New Project, import the GitHub repo.
 2. Root directory: `web`.
-3. Environment variable: `NEXT_PUBLIC_API_URL` = `https://api.sixfingers.avikwok.dev`.
+3. Environment variables: `NEXT_PUBLIC_API_URL` = `https://api.sixfingers.avikwok.dev`, and (if you use Turnstile) `NEXT_PUBLIC_TURNSTILE_SITE_KEY` = the site key of the same Cloudflare Turnstile widget (the site key is public; the secret key is not). Add `sixfingers.avikwok.dev` to the widget's hostnames in Cloudflare.
 4. Deploy, then Settings, Domains, add `sixfingers.avikwok.dev` and create the DNS record Vercel shows.
 
 ## 9. Check everything
@@ -75,10 +76,14 @@ The API reads these at start. After a change, run `sudo systemctl restart sixfin
 |---|---|---|
 | `ANTHROPIC_API_KEY` | none | Key for the Claude Haiku 5.5 judge. Without it, answers come from the detector only. |
 | `DISCORD_WEBHOOK_URL` | none | Where the nightly loop posts its report. |
+| `SIXFINGERS_TURNSTILE_SECRET` | none | Cloudflare Turnstile secret key. Without it there is no bot check. With it, image and video checks need a Turnstile token, or they get the detector-only answer, so bots cannot spend the judge budget. Pair it with the site key in Vercel. |
+| `SIXFINGERS_TURNSTILE_HOSTNAMES` | `sixfingers.avikwok.dev` | Comma-separated hostnames Cloudflare may report for a Turnstile token (subdomains match too). A valid token for any other hostname gets the detector-only answer. Change it only if the web app moves to another domain. |
 | `SIXFINGERS_TRUST_PROXY` | `1` (set by setup) | Take the visitor IP from Caddy's `X-Forwarded-For` header. |
 | `SIXFINGERS_JUDGE_BUDGET` | `500` | Judge calls allowed per UTC day, for the whole site. |
 | `SIXFINGERS_JUDGE_PER_IP_DAY` | `20` | Judge calls allowed per visitor IP per day. After that the visitor gets the detector-only answer. |
 | `SIXFINGERS_MAX_CONCURRENT` | `2` | Checks the API runs at the same time. Keeps the small VM from running out of memory. |
+| `SIXFINGERS_ENABLE_AUDIO` | off | Set to `1` to turn on the prototype audio checks (`POST /v1/check-audio` and the audio score in video results). Audio ships off. |
+| `SIXFINGERS_AUDIO_MODEL` | `a3` | Which audio model folder under `models/audio/` to use. |
 
 ## Nightly loop (optional)
 Off by default. To turn it on, run setup with the flag:

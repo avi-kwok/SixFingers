@@ -1,6 +1,6 @@
 # SixFingers
 
-Upload an image, find out whether it looks AI-generated. Fully AI-generated stills only (JPEG/PNG/WebP).
+Check whether a video or an image looks AI-generated. A video is checked two ways: the picture (frames scored by the detector and read by a visual judge) and the voice (a prototype voice deepfake check), then one overall verdict says which part flagged it. Images are fully AI-generated stills only (JPEG/PNG/WebP), and videos are short, up to 60 seconds (MP4/WebM/MOV). The voice check is off by default, scores only the first 4 seconds of speech and can be wrong. Video checks need `ffmpeg` and `ffprobe` installed (for example `brew install ffmpeg`).
 
 See `docs/ARCHITECTURE.md` for how it fits together.
 

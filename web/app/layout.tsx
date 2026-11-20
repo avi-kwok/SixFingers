@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "SixFingers",
-  description: "Check whether an image looks fully AI-generated.",
+  description: "Check whether a video (picture and voice) or an image looks AI-generated.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

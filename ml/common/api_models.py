@@ -1,4 +1,5 @@
-"""Pydantic models for the HTTP API. /v1/check response shape is frozen."""
+"""Pydantic models for the HTTP API. /v1/check response shape is frozen. Video* models serve /v1/check-video,
+Audio* models /v1/check-audio (and the audio part of a video result when audio checks are on)."""
 from __future__ import annotations
 
 import math
@@ -84,11 +85,111 @@ class CheckResponse(BaseModel):
     source: Literal["judge", "detector_only"]
     probability_ai: float = Field(ge=0, le=1)  # calibrated P(AI): judge-based when source=judge, else the detector score
     judge: JudgeResult | None = None
-    judge_unavailable_reason: Literal["budget", "timeout", "error", "refusal", "disabled"] | None = None
+    judge_unavailable_reason: Literal["budget", "timeout", "error", "refusal", "disabled", "verification"] | None = None
     detector: DetectorResult
     provenance: Provenance
     model_version: str
     timings_ms: Timings
+    disclaimer: str
+    check_id: str | None = None  # random id for POST /v1/feedback; None when usage storage failed
+
+
+class FrameScore(BaseModel):
+    index: int  # 1-based, as labelled in the frame grid
+    time_s: float
+    score: float
+    band: Verdict
+
+
+class VideoDetectorResult(BaseModel):
+    score: float  # mean of the 4 highest frame scores
+    band: Verdict
+    frames: list[FrameScore]
+    thresholds: Thresholds
+
+
+class FrameCue(BaseModel):
+    frame: int
+    region: str
+    cue: str
+
+
+class VideoJudgeOutput(BaseModel):
+    """What Claude is asked to return for a video (JSON schema for output_config.format)."""
+    verdict: Verdict
+    confidence: float = Field(ge=0, le=1)
+    cues: list[FrameCue]
+    explanation: str
+    overrode_detector: bool
+
+
+class VideoCue(BaseModel):
+    frame: int
+    time_s: float  # looked up by the server from the frame number, never taken from the model
+    region: str
+    cue: str
+
+
+class VideoJudgeResult(BaseModel):
+    model: str
+    confidence: float = Field(ge=0, le=1)
+    cues: list[VideoCue]
+    explanation: str
+    overrode_detector: bool
+
+
+class AudioInfo(BaseModel):
+    analysed: bool = False
+    note: str = "Audio is not analysed yet."
+
+
+class AudioResult(BaseModel):
+    analysed: Literal[True] = True
+    p_fake: float = Field(ge=0, le=1)  # probability the speech is synthetic, from the audio probe
+    band: Verdict
+    threshold: float  # p_fake at or above this is likely_ai
+    model_version: str
+    note: str
+
+
+class AudioTimings(BaseModel):
+    validate_: int = Field(0, alias="validate")
+    detector: int = 0
+    total: int = 0
+    model_config = {"populate_by_name": True}
+
+
+class AudioCheckResponse(BaseModel):
+    verdict: Verdict
+    source: Literal["detector_only"] = "detector_only"  # no judge: Claude cannot hear audio
+    audio: AudioResult
+    duration_s: float
+    timings_ms: AudioTimings
+    disclaimer: str
+    check_id: str | None = None  # random id for POST /v1/feedback; None when usage storage failed
+
+
+class VideoTimings(BaseModel):
+    validate_: int = Field(0, alias="validate")
+    frames: int = 0
+    detector: int = 0
+    judge: int = 0
+    total: int = 0
+    model_config = {"populate_by_name": True}
+
+
+class VideoCheckResponse(BaseModel):
+    verdict: Verdict  # the picture verdict (frames, judge or detector); the voice result is in `audio`
+    overall_verdict: Verdict  # picture and voice combined by a simple rule; equals `verdict` when there is no voice result
+    overall_flagged_by: list[Literal["picture", "voice"]] = Field(default_factory=list)  # parts that said likely_ai
+    source: Literal["judge", "detector_only"]
+    judge: VideoJudgeResult | None = None
+    judge_unavailable_reason: Literal["budget", "timeout", "error", "refusal", "disabled", "verification"] | None = None
+    detector: VideoDetectorResult
+    audio: AudioResult | AudioInfo = Field(default_factory=AudioInfo)
+    duration_s: float
+    model_version: str
+    timings_ms: VideoTimings
     disclaimer: str
     check_id: str | None = None  # random id for POST /v1/feedback; None when usage storage failed
 

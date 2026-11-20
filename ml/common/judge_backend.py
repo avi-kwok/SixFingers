@@ -65,7 +65,7 @@ class ApiBackend:
     def __init__(self, client):
         self.client = client
 
-    def ask(self, *, model, system, image, evidence, schema, max_tokens, timeout):
+    def ask(self, *, model, system, image, evidence, schema, max_tokens, timeout, out_model=JudgeOutput):
         data = _b64_jpeg(image)
         try:
             resp = self.client.messages.create(
@@ -86,7 +86,7 @@ class ApiBackend:
             raise BackendError("error")
         try:
             text = next(b.text for b in resp.content if getattr(b, "type", "text") == "text")
-            out = JudgeOutput.model_validate_json(text)
+            out = out_model.model_validate_json(text)
         except Exception:
             raise BackendError("error") from None
         usage = getattr(resp, "usage", None)
@@ -99,7 +99,7 @@ class CommandBackend:
     def __init__(self, cmd: str, timeout_s: float = COMMAND_TIMEOUT_S):
         self.argv, self.timeout_s = shlex.split(cmd), timeout_s
 
-    def ask(self, *, model, system, image, evidence, schema, max_tokens, timeout):  # timeout unused: self.timeout_s applies
+    def ask(self, *, model, system, image, evidence, schema, max_tokens, timeout, out_model=JudgeOutput):  # timeout unused: self.timeout_s applies
         req = {"model": model, "system": system, "evidence": evidence,
                "image": {"media_type": "image/jpeg", "data": _b64_jpeg(image)},
                "schema": schema, "max_tokens": max_tokens}
@@ -122,7 +122,7 @@ class CommandBackend:
             log.warning("judge command failed (exit %d)", p.returncode)
             raise BackendError("error")
         try:
-            out = JudgeOutput.model_validate_json(p.stdout)
+            out = out_model.model_validate_json(p.stdout)
         except Exception:
             raise BackendError("error") from None
         return out, (0, 0)

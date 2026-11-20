@@ -19,16 +19,22 @@ class RateLimiter:
         day = datetime.now(timezone.utc).date().isoformat()
         return hashlib.sha256(f"{self.salt}|{day}|{ip}".encode()).hexdigest()[:16]
 
-    def allow(self, key: str) -> int:
-        """Return 0 if allowed (and count it), else seconds until a slot frees up."""
+    def allow(self, key: str, cost: int = 1) -> int:
+        """Return 0 if allowed (and count `cost` hits), else seconds until `cost` slots free up.
+
+        A cost above the limit can never fit, so it reports the whole window.
+        """
         now = time.monotonic()
         with self._lock:
             q = self.hits[key]
             while q and now - q[0] > self.window:
                 q.popleft()
-            if len(q) >= self.limit:
-                return int(self.window - (now - q[0])) + 1
-            q.append(now)
+            if len(q) + cost > self.limit:
+                if cost > self.limit:
+                    return self.window
+                oldest = q[len(q) + cost - self.limit - 1]  # the hit whose expiry frees the first slot
+                return int(self.window - (now - oldest)) + 1
+            q.extend([now] * cost)
             if len(self.hits) > 50_000:  # drop stale keys so memory stays bounded
                 for k in [k for k, v in self.hits.items() if not v or now - v[-1] > self.window]:
                     del self.hits[k]

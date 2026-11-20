@@ -1,9 +1,15 @@
-import type { CheckResponse, FeedbackBody, Scorecard } from "./types";
+import { TOKEN_HEADER, getToken } from "./turnstile";
+import type { AudioCheckResponse, CheckResponse, FeedbackBody, Scorecard, VideoCheckResponse } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 export const MOCK = process.env.NEXT_PUBLIC_MOCK === "1";
 export const MAX_BYTES = 10 * 1024 * 1024;
 export const ACCEPT = ["image/jpeg", "image/png", "image/webp"];
+export const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
+export const VIDEO_ACCEPT = ["video/mp4", "video/webm", "video/quicktime"];
+export const AUDIO_MAX_BYTES = 25 * 1024 * 1024;
+// Browsers name audio types inconsistently (audio/x-wav, audio/x-m4a...), so any audio/* is sent and the server sniffs it.
+export const AUDIO_ACCEPT = "audio/*,.wav,.mp3,.flac,.ogg,.m4a,.webm";
 
 export class ApiError extends Error {
   constructor(public kind: "rate" | "big" | "type" | "refused" | "link" | "timeout" | "network" | "other", message: string) {
@@ -39,6 +45,70 @@ export const MOCK_RESULT: CheckResponse = {
   disclaimer: "Mock data. No real image was analysed.",
 };
 
+export const MOCK_VIDEO_RESULT: VideoCheckResponse = {
+  verdict: "likely_ai",
+  overall_verdict: "likely_ai",
+  overall_flagged_by: ["picture"],
+  check_id: null,
+  source: "judge",
+  judge: {
+    model: "claude-haiku-5-5",
+    confidence: 0.8,
+    cues: [
+      { frame: 5, time_s: 1.406, region: "hands", cue: "Finger count changes between frames." },
+      { frame: 11, time_s: 3.281, region: "background", cue: "Sign lettering smears and reflows." },
+    ],
+    explanation: "Frames 5 and 11 show anatomy and text artifacts typical of generated video.",
+    overrode_detector: false,
+  },
+  judge_unavailable_reason: null,
+  detector: {
+    score: 0.86,
+    band: "likely_ai",
+    frames: [
+      { index: 1, time_s: 0.156, score: 0.12, band: "likely_real" },
+      { index: 2, time_s: 0.469, score: 0.18, band: "likely_real" },
+      { index: 3, time_s: 0.781, score: 0.41, band: "uncertain" },
+      { index: 4, time_s: 1.094, score: 0.66, band: "uncertain" },
+      { index: 5, time_s: 1.406, score: 0.88, band: "likely_ai" },
+      { index: 6, time_s: 1.719, score: 0.79, band: "likely_ai" },
+      { index: 7, time_s: 2.031, score: 0.35, band: "uncertain" },
+      { index: 8, time_s: 2.344, score: 0.22, band: "likely_real" },
+      { index: 9, time_s: 2.656, score: 0.52, band: "uncertain" },
+      { index: 10, time_s: 2.969, score: 0.84, band: "likely_ai" },
+      { index: 11, time_s: 3.281, score: 0.93, band: "likely_ai" },
+      { index: 12, time_s: 3.594, score: 0.71, band: "likely_ai" },
+      { index: 13, time_s: 3.906, score: 0.46, band: "uncertain" },
+      { index: 14, time_s: 4.219, score: 0.27, band: "uncertain" },
+      { index: 15, time_s: 4.531, score: 0.15, band: "likely_real" },
+      { index: 16, time_s: 4.844, score: 0.09, band: "likely_real" },
+    ],
+    thresholds: { t_ai: 0.7, t_real: 0.25 },
+  },
+  audio: { analysed: false, note: "Audio is not analysed yet." },
+  duration_s: 5,
+  model_version: "v0-mock",
+  timings_ms: { validate: 3, frames: 40, detector: 240, judge: 1500, total: 1900 },
+  disclaimer: "Mock data. No real video was analysed.",
+};
+
+export const MOCK_AUDIO_RESULT: AudioCheckResponse = {
+  verdict: "likely_ai",
+  check_id: null,
+  source: "detector_only",
+  audio: {
+    analysed: true,
+    p_fake: 0.74,
+    band: "likely_ai",
+    threshold: 0.18,
+    model_version: "a0-mock",
+    note: "Prototype. Only the first 4 seconds of speech are scored.",
+  },
+  duration_s: 6.2,
+  timings_ms: { validate: 40, detector: 300, total: 340 },
+  disclaimer: "Mock data. No real audio was analysed.",
+};
+
 export const MOCK_SCORECARD: Scorecard = {
   model_version: "v0-mock",
   date: "2026-01-01",
@@ -69,20 +139,40 @@ const STATUS: Record<number, [ApiError["kind"], string]> = {
   422: ["refused", "We can't analyse this image."],
 };
 
+const VIDEO_STATUS: Record<number, [ApiError["kind"], string]> = {
+  400: ["other", "Could not read this video."],
+  413: ["big", "That video is too large or too long. The limits are 100 MB and 60 seconds."],
+  415: ["type", "Unsupported file type. Use MP4, WebM or MOV."],
+  422: ["refused", "We can't analyse this video."],
+  429: ["rate", "Too many checks. The limit is 10 per hour and a video counts as 3. Try again later."],
+  503: ["other", "Video checks are not available right now."],
+};
+
+const AUDIO_STATUS: Record<number, [ApiError["kind"], string]> = {
+  400: ["other", "Could not read this audio."],
+  404: ["other", "Audio checks are not turned on for this server."],
+  413: ["big", "That audio is too large or too long. The limits are 25 MB and 60 seconds."],
+  415: ["type", "Unsupported file type. Use WAV, MP3, FLAC, OGG, M4A or WebM."],
+  429: ["rate", "Too many checks. The limit is 10 per hour. Try again later."],
+  503: ["other", "Audio checks are not available right now."],
+};
+
 const LINK_MSG = "That link can't be used.";
 const LINK_EXPIRED = "Couldn't fetch that image. The link may have expired or not be public.";
 
 // XHR rather than fetch so we can report upload progress.
-export function checkImage(file: File | string, onProgress: (frac: number) => void): Promise<CheckResponse> {
+export async function checkImage(file: File | string, onProgress: (frac: number) => void): Promise<CheckResponse> {
   if (MOCK) {
     return new Promise((res) => {
       onProgress(1);
       setTimeout(() => res(MOCK_RESULT), 600);
     });
   }
+  const token = await getToken();
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_URL}/v1/check`);
+    if (token) xhr.setRequestHeader(TOKEN_HEADER, token);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onerror = () => reject(new ApiError("network", "Could not reach the server. Check your connection and try again."));
     xhr.ontimeout = xhr.onerror;
@@ -106,6 +196,74 @@ export function checkImage(file: File | string, onProgress: (frac: number) => vo
     else form.append("image", file);
     xhr.send(form);
   });
+}
+
+export async function checkVideo(file: File, onProgress: (frac: number) => void): Promise<VideoCheckResponse> {
+  if (MOCK) {
+    return new Promise((res) => {
+      onProgress(1);
+      setTimeout(() => res(MOCK_VIDEO_RESULT), 600);
+    });
+  }
+  const token = await getToken();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/v1/check-video`);
+    if (token) xhr.setRequestHeader(TOKEN_HEADER, token);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onerror = () => reject(new ApiError("network", "Could not reach the server. Check your connection and try again."));
+    xhr.ontimeout = () => reject(new ApiError("timeout", "The check took too long. Try a shorter video."));
+    // Upload of up to 100 MB plus frame sampling and the explainer can take minutes.
+    xhr.timeout = 300000;
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        try { return resolve(JSON.parse(xhr.responseText) as VideoCheckResponse); } catch { /* fall through */ }
+      }
+      const [kind, msg] = VIDEO_STATUS[xhr.status] ?? ["other", "Something went wrong on the server. Try again."];
+      reject(new ApiError(kind, msg));
+    };
+    const form = new FormData();
+    form.append("video", file);
+    xhr.send(form);
+  });
+}
+
+export function checkAudio(file: File, onProgress: (frac: number) => void): Promise<AudioCheckResponse> {
+  if (MOCK) {
+    return new Promise((res) => {
+      onProgress(1);
+      setTimeout(() => res(MOCK_AUDIO_RESULT), 600);
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/v1/check-audio`);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onerror = () => reject(new ApiError("network", "Could not reach the server. Check your connection and try again."));
+    xhr.ontimeout = () => reject(new ApiError("timeout", "The check took too long. Try again."));
+    xhr.timeout = 120000; // the first audio check also loads the speech model
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        try { return resolve(JSON.parse(xhr.responseText) as AudioCheckResponse); } catch { /* fall through */ }
+      }
+      const [kind, msg] = AUDIO_STATUS[xhr.status] ?? ["other", "Something went wrong on the server. Try again."];
+      reject(new ApiError(kind, msg));
+    };
+    const form = new FormData();
+    form.append("audio", file);
+    xhr.send(form);
+  });
+}
+
+/** True when the server has the prototype audio check turned on (it reports audio_enabled in /v1/health). */
+export async function audioEnabled(): Promise<boolean> {
+  if (MOCK) return true;
+  try {
+    const r = await fetch(`${API_URL}/v1/health`);
+    return (await r.json()).audio_enabled === true;
+  } catch {
+    return false;
+  }
 }
 
 const FEEDBACK_STATUS: Record<number, string> = {

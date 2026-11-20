@@ -50,6 +50,14 @@ button:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 55%, b
 button:disabled { opacity: .5; cursor: not-allowed; }
 table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
 ul { padding-left: 1.2rem; }
+.tabs { display: flex; gap: 8px; margin: 12px 0; }
+.tabs [aria-selected="true"] { border-color: var(--accent); font-weight: 700; }
+.strip { display: flex; gap: 8px; overflow-x: auto; list-style: none; padding: 4px 0 8px; margin: 0; }
+.shot { flex: 0 0 auto; width: 112px; border: 1px solid var(--line); border-radius: 8px; padding: 4px; font-size: .8rem; text-align: center; }
+.part { border: 1px solid var(--line); border-radius: 8px; padding: 4px 16px 12px; margin-top: 16px; }
+.part h2 { margin-top: 12px; }
+.shot img { width: 100%; display: block; border-radius: 4px; }
+.shot.cited { border: 2px solid var(--accent); }
 footer.site { border-top: 1px solid var(--line); padding: 24px 0; font-size: .875rem; color: var(--subtle); }
 footer.site .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; }
 footer.site a { font-size: .875rem; }

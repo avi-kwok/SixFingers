@@ -17,7 +17,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-commo
 apt-cache show python3.11-venv >/dev/null 2>&1 || { sudo add-apt-repository -y ppa:deadsnakes/ppa && sudo apt-get update -y; }
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3.11 python3.11-venv python3-pip git curl util-linux debian-keyring debian-archive-keyring \
-  apt-transport-https gpg iptables iptables-persistent netfilter-persistent libgl1 libglib2.0-0
+  apt-transport-https gpg iptables iptables-persistent netfilter-persistent libgl1 libglib2.0-0 ffmpeg
 
 say "python venv + dependencies (CPU torch on the server)"
 cd "$REPO"
