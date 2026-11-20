@@ -2,7 +2,8 @@
 # License text records what each source states; "unverified" marks licences whose page has not been checked.
 #
 # Full scale (make full, FULL_LIMIT=2500 per source)
-#   ~5.3k real  = 2500 COCO + 2500 Open Images + 300 RAISE (test only).
+#   ~10.3k real = 2500 COCO + 2500 Open Images + 2500 Open Images originals (camera photos, train/val/gate)
+#                 + 2500 Wikimedia Commons (camera photos, train/val/gate) + 300 RAISE (test only).
 #   ~5.1k AI    = 2500 SDXL-Turbo (local, COCO captions) + ~760 DALL-E 3 + ~770 Midjourney
 #                 + ~790 Stable Diffusion + ~330 FLUX (held out, test only): 5 generators.
 #   Rapidata has about 280 prompts x 4 images per generator; 30% of prompts go to the held-out
@@ -28,6 +29,22 @@ sources:
     url: https://storage.googleapis.com/openimages/2018_04/validation/validation-images-with-rotation.csv (image ids) + https://open-images-dataset.s3.amazonaws.com/validation/<id>.jpg
     license: "images CC BY 2.0 (verified: all 41620 rows of the validation CSV list that licence; the per-image URL goes into the manifest); annotations CC BY 4.0 unverified"
     notes: no login needed. Validation split only at smoke scale.
+    enabled: true
+  - name: openimages_original
+    side: real
+    generator: real_oi_original
+    downloader: oiorig
+    url: OriginalURL (Flickr original) of each row of the Open Images validation CSV that the openimages source uses
+    license: "CC BY 2.0 per image (License column of the Open Images validation CSV; all 41620 rows list it; rows with any other licence are skipped). Author, author page, Flickr page and licence URL are kept per image in data/raw/openimages_original/index.jsonl. Images are not redistributed; data stays out of git."
+    notes: "Camera photos for the real side of train/val/gate; never report_test. Validation images that the openimages source has not taken; kept only when the original's EXIF names a camera make; stored at 1600 px on the long edge, JPEG q90. Dead links and photos without a camera make are listed in _rejected.txt and not fetched again."
+    enabled: true
+  - name: wikimedia_commons
+    side: real
+    generator: real_commons
+    downloader: commons
+    url: https://commons.wikimedia.org/w/api.php (files of the "Category:Taken with <camera>" categories) + the original files on upload.wikimedia.org
+    license: "per file, read from the file's LicenseShortName on Commons; only CC0, public domain, CC BY and CC BY-SA files are kept (CC BY-SA asks that adaptations be shared under the same licence; whether a trained model is an adaptation is unsettled). Title, author, licence, licence URL and file page URL are kept per image in data/raw/wikimedia_commons/index.jsonl. Images are not redistributed; data stays out of git."
+    notes: "Camera photos (DSLRs, mirrorless cameras, compacts and phones) for the real side of train/val/gate; never report_test. At most 3 files per camera category; kept only when the file is a JPEG with a short side of at least 1000 px, EXIF names the camera make and model, the EXIF date taken is before 2022 (a guard against AI images) and no category mentions AI generation. Stored at 1600 px on the long edge, JPEG q90. Rejected and dead files are listed in _rejected.txt with the reason and not checked again."
     enabled: true
   - name: raise
     side: real

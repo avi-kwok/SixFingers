@@ -1,7 +1,16 @@
 __DOMAIN__ {
 	encode gzip
-	request_body {
+	# videos may be up to 100 MB; everything else keeps the 10 MB image cap
+	@video path /v1/check-video
+	request_body @video {
+		max_size 101MB
+	}
+	@other not path /v1/check-video
+	request_body @other {
 		max_size 11MB
 	}
-	reverse_proxy 127.0.0.1:8000
+	reverse_proxy 127.0.0.1:8000 {
+		# replace any client-sent value so the API sees the real visitor IP
+		header_up X-Forwarded-For {remote_host}
+	}
 }

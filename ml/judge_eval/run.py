@@ -7,6 +7,8 @@ The judge backend comes from SIXFINGERS_JUDGE_BACKEND: api (default, needs ANTHR
 (default 1800 s) and resumes from the cache.
 Spend is the sum of cached per-call costs (usage tokens x list price), so a re-run never pays twice.
 Before each call the worst-case cost (estimated input + max_tokens of output) must still fit under the cap.
+Every call sends the production prompt and provenance text from api/judge.py, as POST /v1/check does;
+evidence arms add the detector evidence in front of that text.
 """
 from __future__ import annotations
 
@@ -21,7 +23,9 @@ import anthropic
 import numpy as np
 import pandas as pd
 
-from ml.common.api_models import JudgeOutput
+from api.judge import SCHEMA, SYSTEM, _evidence
+from api.provenance import read_provenance
+from api.validate import UploadError, validate_upload
 from ml.common.judge_backend import DEFAULT_RETRY_S, ApiBackend, BackendError, from_env
 from ml.common.paths import current_model_dir, data_dir
 from ml.common.schemas import band_for, load_meta
@@ -29,18 +33,13 @@ from ml.eval.run import JUDGE_RE, RESULTS, ensemble_on
 from ml.features import store
 
 HARD_CAP_USD = 10.0
-MAX_TOKENS = 500
+MAX_TOKENS = 800  # same as Judge.judge in api/judge.py
 # USD per million tokens (input, output)
 PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}
 # cheap arms first so a cap hit cuts the expensive tail, not the baseline
 ARMS = [("probes", None, None), ("haiku_blind", "claude-haiku-5-5", False), ("haiku_evidence", "claude-haiku-5-5", True),
         ("sonnet_blind", "claude-sonnet-5-5", False), ("sonnet_evidence", "claude-sonnet-5-5", True),
         ("opus_evidence", "claude-opus-5-5", True)]
-
-SYSTEM = ("You decide whether an image is a fully AI-generated still. Judge visual evidence: anatomy, text, lighting, "
-          "textures, physics, background coherence. Return the requested JSON only. explanation is at most 80 words. "
-          "Image metadata was stripped, so absence of provenance means nothing.")
-
 
 class BudgetExceeded(Exception):
     pass
@@ -90,7 +89,7 @@ class Cache:
 def call_judge(backend, model, img_bytes, text) -> dict:
     try:
         out, (tin, tout) = backend.ask(model=model, system=SYSTEM, image=img_bytes, evidence=text,
-                                       schema=anthropic.transform_schema(JudgeOutput.model_json_schema()),
+                                       schema=SCHEMA,
                                        max_tokens=MAX_TOKENS, timeout=30)
     except BackendError as e:
         if e.reason == "retry_later":
@@ -114,7 +113,12 @@ def run_arms(backend, slice_df, cache: Cache, cap: float, model_dir: Path, arms=
             if (arm, r.image_id) in cache.rows or (evidence and r.image_id not in info):
                 continue
             img = store.resolve(r.path).read_bytes()
-            text = "Is this image AI-generated?"
+            try:
+                checked = validate_upload(img)  # same steps as POST /v1/check
+            except UploadError:  # one bad image must not abort the run
+                cache.add({"arm": arm, "image_id": r.image_id, "model": model, "cost": 0.0, "verdict": "error", "error": "invalid_image"})
+                continue
+            text = _evidence(read_provenance(img, checked.mime, checked.image))
             if evidence:
                 s, sc = info[r.image_id]
                 text = evidence_text(sc, s, band_for(s, meta.thresholds), meta.thresholds) + "\n" + text
@@ -143,8 +147,8 @@ def arm_table(slice_df, cache: Cache, ctx, arms=ARMS) -> list[dict]:
             v = {i: band_for(s, ctx["meta"].thresholds) for i, (s, _) in ctx["info"].items()}
             cost = 0.0
         else:
-            v = {i: cache.rows[(arm, i)]["verdict"] for (a, i) in cache.rows if a == arm}
-            cost = sum(r["cost"] for (a, _), r in cache.rows.items() if a == arm)
+            v = {i: cache.rows[(arm, i)]["verdict"] for (a, i) in cache.rows if a == arm and i in y}  # this slice only
+            cost = sum(r["cost"] for (a, i), r in cache.rows.items() if a == arm and i in y)
         if not v:
             continue
         f = [i for i in v if y[i] == 1]; rl = [i for i in v if y[i] == 0]
@@ -175,14 +179,19 @@ def main(argv=None, client=None):
     ap.add_argument("--approve-spend", type=float, required=True, help="dollar cap you approve (max 10)")
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--model-dir", default=None)
+    ap.add_argument("--split", default="report_test", choices=["report_test", "val"],
+                    help="val feeds the confidence calibration (ml/judge_eval/calibrate.py) without touching report_test")
+    ap.add_argument("--arms", default=None, help="comma-separated arm names, e.g. haiku_blind (default: all)")
+    ap.add_argument("--cache", default=None, help="answer cache file (default data/eval/judge_cache_prod.jsonl)")
     a = ap.parse_args(argv)
     cap = min(a.approve_spend, HARD_CAP_USD)
     if cap <= 0:
         sys.exit("--approve-spend must be > 0")
     model_dir = (Path(a.model_dir) if a.model_dir else current_model_dir()).resolve()
     df = store.load_manifest()
-    sl = stratified(df[df.split == "report_test"], a.n)
-    cache = Cache(data_dir() / "eval" / "judge_cache.jsonl")
+    arms = [x for x in ARMS if a.arms is None or x[0] in a.arms.split(",")]
+    sl = stratified(df[df.split == a.split], a.n)
+    cache = Cache(Path(a.cache) if a.cache else data_dir() / "eval" / "judge_cache_prod.jsonl")
     if client is not None:
         backend = ApiBackend(client)
     else:
@@ -193,9 +202,12 @@ def main(argv=None, client=None):
         backend = from_env(anthropic.Anthropic() if kind == "api" else None)
     if backend is None:
         sys.exit("judge backend not configured (set SIXFINGERS_JUDGE_CMD for the command backend)")
-    ctx = run_arms(backend, sl, cache, cap, model_dir)
-    rows = arm_table(sl, cache, ctx)
-    write_block(rows, cache.spent, cap, ctx["stopped"], len(sl), backend.name)
+    ctx = run_arms(backend, sl, cache, cap, model_dir, arms)
+    rows = arm_table(sl, cache, ctx, arms)
+    if a.split == "report_test":
+        write_block(rows, cache.spent, cap, ctx["stopped"], len(sl), backend.name)
+    else:  # docs/results.md reports report_test only
+        print(json.dumps(rows, default=float, indent=1))
     print(f"spent ${cache.spent:.4f} / cap ${cap:.2f}" + (f"; stopped: {ctx['stopped']}" if ctx["stopped"] else ""))
 
 

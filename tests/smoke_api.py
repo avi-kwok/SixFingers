@@ -13,7 +13,8 @@ try:
             if requests.get(base + "/v1/health", timeout=2).ok:
                 break
         except requests.RequestException:
-            time.sleep(1)
+            pass
+        time.sleep(1)  # also on 503 "loading"
     df = pd.read_parquet("data/manifest.parquet")
     df = df[df.split == "report_test"]
     keys = {"verdict", "source", "judge", "judge_unavailable_reason", "detector", "provenance", "model_version", "timings_ms", "disclaimer"}

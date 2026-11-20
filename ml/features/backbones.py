@@ -15,9 +15,12 @@ def pick_device(prefer: str | None = None) -> str:
 class Backbone:
     name = ""
 
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None, half: bool = False):
         self.device = pick_device(device)
+        # fp16 only on MPS: CPU half-precision matmuls are slow or unsupported
+        self.dtype = torch.float16 if half and self.device == "mps" else torch.float32
         self._load()
+        self.model.to(self.dtype)
 
     def _load(self): raise NotImplementedError
 
@@ -38,7 +41,7 @@ class ClipViTL14(Backbone):
         self.model.eval().to(self.device)
 
     def _embed(self, images):
-        x = torch.stack([self.pre(im) for im in images]).to(self.device)
+        x = torch.stack([self.pre(im) for im in images]).to(self.device, self.dtype)
         return self.model.encode_image(x)
 
 
@@ -54,7 +57,7 @@ class _HFVision(Backbone):
         return self.model
 
     def _embed(self, images):
-        px = self.proc(images=images, return_tensors="pt")["pixel_values"].to(self.device)
+        px = self.proc(images=images, return_tensors="pt")["pixel_values"].to(self.device, self.dtype)
         return self._vision()(pixel_values=px).pooler_output
 
 
@@ -75,5 +78,5 @@ class SigLIP(_HFVision):
 REGISTRY = {c.name: c for c in (ClipViTL14, Dinov2ViTL14, SigLIP)}
 
 
-def load_backbone(name: str, device: str | None = None) -> Backbone:
-    return REGISTRY[name](device)
+def load_backbone(name: str, device: str | None = None, half: bool = False) -> Backbone:
+    return REGISTRY[name](device, half)

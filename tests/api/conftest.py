@@ -65,6 +65,12 @@ def _judge_env_clean(monkeypatch):
     monkeypatch.delenv("SIXFINGERS_JUDGE_CMD", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _data_dir_tmp(tmp_path, monkeypatch):
+    # apps built without usage_path keep usage.sqlite out of the real data dir
+    monkeypatch.setenv("SIXFINGERS_DATA_DIR", str(tmp_path / "data"))
+
+
 def command_script(tmp_path, body, name="judge.py"):
     """Write a Python program to tmp_path and return a shell-safe command line that runs it."""
     script = tmp_path / name
@@ -85,7 +91,8 @@ def models_dir(tmp_path):
 def build(tmp_path, models_dir):
     def _build(client=None, budget_limit=500, rate_limit=10):
         app = create_app(embedder=StubEmbedder(), anthropic_client=client, models_dir=models_dir,
-                         budget_path=tmp_path / "budget.json", budget_limit=budget_limit, rate_limit=rate_limit)
+                         budget_path=tmp_path / "budget.json", budget_limit=budget_limit, rate_limit=rate_limit,
+                         usage_path=tmp_path / "usage.sqlite")
         return TestClient(app)
     return _build
 
